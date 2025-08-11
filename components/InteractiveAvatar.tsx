@@ -46,7 +46,11 @@ const DEFAULT_CONFIG: StartAvatarRequest = {
   },
 };
 
-function InteractiveAvatar() {
+type InteractiveAvatarProps = {
+  fullscreen?: boolean;
+};
+
+function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
   const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
     useStreamingAvatarSession();
   const { startVoiceChat } = useVoiceChat();
@@ -163,14 +167,44 @@ function InteractiveAvatar() {
   }, [sessionState, startSessionV2]);
 
   return (
-    <div className="w-full flex flex-col gap-4">
-      <div className="flex flex-col rounded-xl bg-zinc-900 overflow-hidden">
-        <div className="relative w-full aspect-video overflow-hidden flex flex-col items-center justify-center">
+    <div className={`w-full flex flex-col gap-4 ${fullscreen ? "h-full" : ""}`}>
+      <div
+        className={
+          `flex flex-col overflow-hidden h-full ` +
+          (fullscreen ? "bg-black rounded-none" : "rounded-xl bg-zinc-900")
+        }
+      >
+        <div
+          className={
+            `relative w-full overflow-hidden flex flex-col items-center justify-center ` +
+            (fullscreen ? "h-full" : "aspect-video")
+          }
+        >
           {sessionState !== StreamingAvatarSessionState.INACTIVE && (
-            <AvatarVideo ref={mediaStream} />
+            fullscreen ? (
+              // 9:16 Portrait Frame on mobile fullscreen
+              <div className="w-full h-full flex items-center justify-center">
+                <div className="relative h-full max-h-full max-w-[100vw] aspect-[9/16] bg-black">
+                  <div className="absolute inset-0">
+                    {/**
+                     * Da das Quellvideo 16:9 ist und der Darsteller leicht nach links sitzt,
+                     * verschieben wir die sichtbare Zone etwas nach rechts (z.B. 65%).
+                     */}
+                    <AvatarVideo ref={mediaStream} fit="cover" objectPosition="35% center" />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <AvatarVideo ref={mediaStream} />
+            )
           )}
         </div>
-        <div className="flex flex-col gap-3 items-center justify-center p-4 border-t border-zinc-700 w-full">
+        <div
+          className={
+            `p-4 border-t border-zinc-700 w-full ` +
+            (fullscreen ? "hidden sm:flex flex-col gap-3 items-center justify-center" : "flex flex-col gap-3 items-center justify-center")
+          }
+        >
           {sessionState === StreamingAvatarSessionState.CONNECTED ? (
             <AvatarControls />
           ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
@@ -188,16 +222,22 @@ function InteractiveAvatar() {
         </div>
       </div>
       {sessionState === StreamingAvatarSessionState.CONNECTED && (
-        <MessageHistory />
+        fullscreen ? (
+          <div className="hidden sm:block">
+            <MessageHistory />
+          </div>
+        ) : (
+          <MessageHistory />
+        )
       )}
     </div>
   );
 }
 
-export default function InteractiveAvatarWrapper() {
+export default function InteractiveAvatarWrapper(props: InteractiveAvatarProps) {
   return (
     <StreamingAvatarProvider basePath={process.env.NEXT_PUBLIC_BASE_API_URL}>
-      <InteractiveAvatar />
+      <InteractiveAvatar {...props} />
     </StreamingAvatarProvider>
   );
 }

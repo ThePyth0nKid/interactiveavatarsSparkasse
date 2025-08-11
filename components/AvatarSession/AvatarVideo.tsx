@@ -7,7 +7,13 @@ import { StreamingAvatarSessionState } from "../logic";
 import { CloseIcon } from "../Icons";
 import { Button } from "../Button";
 
-export const AvatarVideo = forwardRef<HTMLVideoElement>(({}, ref) => {
+type AvatarVideoProps = {
+  fit?: "contain" | "cover";
+  objectPosition?: string; // e.g. "center" or "65% center"
+};
+
+export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
+  ({ fit = "contain", objectPosition = "center" }, ref) => {
   const { sessionState, stopAvatar } = useStreamingAvatarSession();
   const { connectionQuality } = useConnectionQuality();
 
@@ -35,7 +41,8 @@ export const AvatarVideo = forwardRef<HTMLVideoElement>(({}, ref) => {
         style={{
           width: "100%",
           height: "100%",
-          objectFit: "contain",
+          objectFit: fit,
+          objectPosition,
         }}
       >
         <track kind="captions" />
@@ -47,5 +54,6 @@ export const AvatarVideo = forwardRef<HTMLVideoElement>(({}, ref) => {
       )}
     </>
   );
-});
+  },
+);
 AvatarVideo.displayName = "AvatarVideo";
