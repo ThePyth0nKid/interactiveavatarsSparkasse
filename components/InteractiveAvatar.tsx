@@ -11,7 +11,6 @@ import { useEffect, useRef, useState } from "react";
 import { useMemoizedFn, useUnmount } from "ahooks";
 
 import { Button } from "./Button";
-import { AvatarConfig } from "./AvatarConfig";
 import { AvatarVideo } from "./AvatarSession/AvatarVideo";
 import { useStreamingAvatarSession } from "./logic/useStreamingAvatarSession";
 import { AvatarControls } from "./AvatarSession/AvatarControls";
@@ -22,17 +21,27 @@ import { MessageHistory } from "./AvatarSession/MessageHistory";
 
 import { AVATARS } from "@/app/lib/constants";
 
+// Read custom avatar id from environment with a safe fallback
+const CUSTOM_AVATAR_ID =
+  process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ??
+  "a4bae5b380764378b25064ab024a6519";
+
 const DEFAULT_CONFIG: StartAvatarRequest = {
-  quality: AvatarQuality.Low,
-  avatarName: AVATARS[0].avatar_id,
+  // Qualität entsprechend Screenshot: high
+  quality: AvatarQuality.High,
+  // Custom Avatar ID entsprechend Screenshot
+  avatarName: CUSTOM_AVATAR_ID,
+  // Keine Knowledge Base ID gesetzt
   knowledgeId: undefined,
   voice: {
     rate: 1.5,
     emotion: VoiceEmotion.EXCITED,
     model: ElevenLabsModel.eleven_flash_v2_5,
   },
-  language: "en",
-  voiceChatTransport: VoiceChatTransport.WEBSOCKET,
+  // Sprache entsprechend Screenshot: German (de)
+  language: "de",
+  // Transport entsprechend Screenshot: livekit
+  voiceChatTransport: VoiceChatTransport.LIVEKIT,
   sttSettings: {
     provider: STTProvider.DEEPGRAM,
   },
@@ -43,9 +52,10 @@ function InteractiveAvatar() {
     useStreamingAvatarSession();
   const { startVoiceChat } = useVoiceChat();
 
-  const [config, setConfig] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
+  const [config] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
 
   const mediaStream = useRef<HTMLVideoElement>(null);
+  const startedOnMountRef = useRef<boolean>(false);
 
   async function fetchAccessToken() {
     try {
@@ -122,14 +132,22 @@ function InteractiveAvatar() {
     }
   }, [mediaStream, stream]);
 
+  // Auto-start voice chat on first load
+  useEffect(() => {
+    if (!startedOnMountRef.current &&
+        sessionState === StreamingAvatarSessionState.INACTIVE) {
+      startedOnMountRef.current = true;
+      // Start with voice chat by default
+      void startSessionV2(true);
+    }
+  }, [sessionState, startSessionV2]);
+
   return (
     <div className="w-full flex flex-col gap-4">
       <div className="flex flex-col rounded-xl bg-zinc-900 overflow-hidden">
         <div className="relative w-full aspect-video overflow-hidden flex flex-col items-center justify-center">
-          {sessionState !== StreamingAvatarSessionState.INACTIVE ? (
+          {sessionState !== StreamingAvatarSessionState.INACTIVE && (
             <AvatarVideo ref={mediaStream} />
-          ) : (
-            <AvatarConfig config={config} onConfigChange={setConfig} />
           )}
         </div>
         <div className="flex flex-col gap-3 items-center justify-center p-4 border-t border-zinc-700 w-full">
