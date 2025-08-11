@@ -23,8 +23,7 @@ import { AVATARS } from "@/app/lib/constants";
 
 // Read custom avatar id from environment with a safe fallback
 const CUSTOM_AVATAR_ID =
-  process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ??
-  "a4bae5b380764378b25064ab024a6519";
+  process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? AVATARS[0].avatar_id;
 
 const DEFAULT_CONFIG: StartAvatarRequest = {
   // Qualität entsprechend Screenshot: high
@@ -109,6 +108,10 @@ function InteractiveAvatar() {
         console.log(">>>>> Avatar end message:", event);
       });
 
+      console.log("Starting avatar with config:", config, {
+        basePath: process.env.NEXT_PUBLIC_BASE_API_URL,
+      });
+
       await startAvatar(config);
 
       if (isVoiceChat) {
@@ -116,6 +119,23 @@ function InteractiveAvatar() {
       }
     } catch (error) {
       console.error("Error starting avatar session:", error);
+      // Retry once with a known public avatar to help diagnose invalid custom IDs
+      if (config.avatarName !== AVATARS[0].avatar_id) {
+        const fallbackConfig = { ...config, avatarName: AVATARS[0].avatar_id };
+        try {
+          console.warn(
+            "Retrying with public avatar to validate setup:",
+            fallbackConfig.avatarName,
+          );
+          await startAvatar(fallbackConfig);
+          if (isVoiceChat) {
+            await startVoiceChat();
+          }
+          return;
+        } catch (fallbackError) {
+          console.error("Fallback start failed as well:", fallbackError);
+        }
+      }
     }
   });
 
