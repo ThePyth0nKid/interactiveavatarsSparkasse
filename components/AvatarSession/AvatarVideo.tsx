@@ -4,8 +4,9 @@ import { ConnectionQuality } from "@heygen/streaming-avatar";
 import { useConnectionQuality } from "../logic/useConnectionQuality";
 import { useStreamingAvatarSession } from "../logic/useStreamingAvatarSession";
 import { StreamingAvatarSessionState } from "../logic";
-import { CloseIcon } from "../Icons";
-import { Button } from "../Button";
+// removed in-video close button in favor of global close in InteractiveAvatar
+// import { Button } from "../Button";
+import LoadingOverlay from "../LoadingOverlay";
 
 type AvatarVideoProps = {
   fit?: "contain" | "cover";
@@ -26,14 +27,7 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
           {connectionQuality}
         </div>
       )}
-      {isLoaded && (
-        <Button
-          className="absolute top-3 right-3 !p-2 bg-zinc-700 bg-opacity-50 z-10"
-          onClick={stopAvatar}
-        >
-          <CloseIcon />
-        </Button>
-      )}
+      {/* In-Video Close removed */}
       <video
         ref={ref}
         autoPlay
@@ -47,11 +41,7 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
       >
         <track kind="captions" />
       </video>
-      {!isLoaded && (
-        <div className="w-full h-full flex items-center justify-center absolute top-0 left-0">
-          Loading...
-        </div>
-      )}
+      {!isLoaded && <LoadingOverlay />}
     </>
   );
   },

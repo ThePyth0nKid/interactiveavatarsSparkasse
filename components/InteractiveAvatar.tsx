@@ -20,6 +20,8 @@ import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
 
 import { AVATARS } from "@/app/lib/constants";
+import { useMediaQuery } from "./logic/useMediaQuery";
+import { MicOverlay } from "./AvatarSession/MicOverlay";
 
 // Read custom avatar id from environment with a safe fallback
 const CUSTOM_AVATAR_ID =
@@ -59,6 +61,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
 
   const mediaStream = useRef<HTMLVideoElement>(null);
   const startedOnMountRef = useRef<boolean>(false);
+  const isMobile = useMediaQuery("(max-width: 639px)");
 
   async function fetchAccessToken() {
     try {
@@ -182,27 +185,44 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
         >
           {sessionState !== StreamingAvatarSessionState.INACTIVE && (
             fullscreen ? (
-              // 9:16 Portrait Frame on mobile fullscreen
               <div className="w-full h-full flex items-center justify-center">
-                <div className="relative h-full max-h-full max-w-[100vw] aspect-[9/16] bg-black">
-                  <div className="absolute inset-0">
-                    {/**
-                     * Da das Quellvideo 16:9 ist und der Darsteller leicht nach links sitzt,
-                     * verschieben wir die sichtbare Zone etwas nach rechts (z.B. 65%).
-                     */}
-                    <AvatarVideo ref={mediaStream} fit="cover" objectPosition="35% center" />
+                {isMobile ? (
+                  <div className="relative h-full max-h-full max-w-[100vw] aspect-[9/16] bg-black">
+                    <div className="absolute inset-0">
+                      <AvatarVideo ref={mediaStream} fit="cover" objectPosition="35% center" />
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="relative w-full h-full bg-black">
+                    <div className="absolute inset-0">
+                      <AvatarVideo ref={mediaStream} fit="contain" objectPosition="center center" />
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <AvatarVideo ref={mediaStream} />
             )
           )}
+          {/* Mikro-Overlay unten mittig im Videoframe */}
+          <div className="absolute bottom-5 left-1/2 -translate-x-1/2">
+            <MicOverlay />
+          </div>
+          {/* Close-Button oben rechts */}
+          <div className="absolute top-3 right-3">
+            <a
+              href="/"
+              aria-label="Schließen und zur Widget-Seite zurückkehren"
+              className="h-9 w-9 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 flex items-center justify-center hover:bg-white"
+            >
+              <span className="text-lg leading-none">×</span>
+            </a>
+          </div>
         </div>
         <div
           className={
             `p-4 border-t border-zinc-700 w-full ` +
-            (fullscreen ? "hidden sm:flex flex-col gap-3 items-center justify-center" : "flex flex-col gap-3 items-center justify-center")
+            (fullscreen ? "hidden" : "flex flex-col gap-3 items-center justify-center")
           }
         >
           {sessionState === StreamingAvatarSessionState.CONNECTED ? (
@@ -221,14 +241,8 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
           )}
         </div>
       </div>
-      {sessionState === StreamingAvatarSessionState.CONNECTED && (
-        fullscreen ? (
-          <div className="hidden sm:block">
-            <MessageHistory />
-          </div>
-        ) : (
-          <MessageHistory />
-        )
+      {sessionState === StreamingAvatarSessionState.CONNECTED && !fullscreen && (
+        <MessageHistory />
       )}
     </div>
   );
