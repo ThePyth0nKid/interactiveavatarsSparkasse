@@ -231,3 +231,31 @@ export function CloseIcon({
     </svg>
   );
 }
+
+export function ExpandIcon({ size = 24, width, height, ...props }: IconSvgProps) {
+  return (
+    <svg
+      fill="none"
+      height={size || height}
+      viewBox="0 0 24 24"
+      width={size || width}
+      xmlns="http://www.w3.org/2000/svg"
+      {...props}
+    >
+      <path
+        d="M8 3H3v5M21 8V3h-5M3 16v5h5M16 21h5v-5"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="2"
+      />
+      <path
+        d="M9 15l-6 6M21 3l-6 6M3 21l6-6M15 9l6-6"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="0"
+      />
+    </svg>
+  );
+}

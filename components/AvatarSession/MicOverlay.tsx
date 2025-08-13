@@ -24,7 +24,7 @@ export const MicOverlay: React.FC = () => {
       aria-label={isMuted ? "Mikrofon einschalten" : "Mikrofon stummschalten"}
       disabled={isVoiceChatLoading}
       onClick={toggleMute}
-      className="relative z-10 h-12 w-12 rounded-full bg-[#E60000] text-white shadow-lg border border-black/10 flex items-center justify-center hover:brightness-110 disabled:opacity-60"
+      className="relative z-10 h-12 w-12 rounded-full bg-[#E60000] text-white shadow-lg border border-black/10 flex items-center justify-center hover:brightness-110 disabled:opacity-60 mx-auto"
     >
       <span
         className={`absolute -inset-1 rounded-full ring-2 ring-[#E60000] ${
