@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import InteractiveAvatar from "./InteractiveAvatar";
+import { ExpandIcon } from "./Icons";
 
 export default function ChatWidget() {
   const [open, setOpen] = useState(false);
@@ -19,8 +20,8 @@ export default function ChatWidget() {
 
       {/* Panel */}
       {open && (
-        <div className="fixed z-40 bottom-24 right-6 w-[360px] sm:w-[420px] h-[560px] bg-zinc-900 rounded-xl overflow-hidden shadow-2xl border border-zinc-700">
-          <div className="flex items-center justify-between px-4 py-2 bg-[#E60000] text-white">
+        <div className="fixed z-40 bottom-24 right-6 w-[360px] sm:w-[420px] h-[560px] bg-zinc-900 rounded-xl overflow-hidden shadow-2xl border border-zinc-700 flex flex-col">
+          <div className="flex items-center justify-between px-4 py-2 bg-[#E60000] text-white flex-none">
             <span className="font-semibold">Berater-Chat</span>
             <button
               className="text-white/90 hover:text-white"
@@ -29,8 +30,18 @@ export default function ChatWidget() {
               ✕
             </button>
           </div>
-          <div className="h-full">
-            <InteractiveAvatar />
+          <div className="relative flex-1">
+            {/* Expand to fullscreen button */}
+            <a
+              href="/berater"
+              aria-label="Vollbild öffnen"
+              className="absolute top-3 right-3 z-10 h-9 w-9 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 flex items-center justify-center hover:bg-white"
+            >
+              <ExpandIcon size={18} />
+            </a>
+              <div className="absolute inset-0">
+                <InteractiveAvatar hideChat forcePortrait />
+              </div>
           </div>
         </div>
       )}

@@ -16,22 +16,31 @@ import { useStreamingAvatarSession } from "./logic/useStreamingAvatarSession";
 import { AvatarControls } from "./AvatarSession/AvatarControls";
 import { useVoiceChat } from "./logic/useVoiceChat";
 import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic";
+import { useConversationState } from "./logic/useConversationState";
+import { ConnectionQuality } from "@heygen/streaming-avatar";
+import { useConnectionQuality } from "./logic/useConnectionQuality";
 import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
 
 import { AVATARS } from "@/app/lib/constants";
 import { useMediaQuery } from "./logic/useMediaQuery";
 import { MicOverlay } from "./AvatarSession/MicOverlay";
+import { TextOverlay } from "./AvatarSession/TextOverlay";
 
-// Read custom avatar id from environment with a safe fallback
-const CUSTOM_AVATAR_ID =
-  process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? AVATARS[0].avatar_id;
+// Resolve avatar id from localStorage if available, otherwise env, then fallback list
+function getPreferredAvatarId(): string {
+  if (typeof window !== "undefined") {
+    const stored = window.localStorage.getItem("heygen_selected_avatar_id");
+    if (stored && stored.trim().length > 0) return stored;
+  }
+  return process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? AVATARS[0].avatar_id;
+}
 
 const DEFAULT_CONFIG: StartAvatarRequest = {
   // Qualität entsprechend Screenshot: high
   quality: AvatarQuality.High,
-  // Custom Avatar ID entsprechend Screenshot
-  avatarName: CUSTOM_AVATAR_ID,
+  // Avatar-ID wird dynamisch ermittelt (Navbar-Auswahl > ENV > Fallback)
+  avatarName: getPreferredAvatarId(),
   // Keine Knowledge Base ID gesetzt
   knowledgeId: undefined,
   voice: {
@@ -48,20 +57,40 @@ const DEFAULT_CONFIG: StartAvatarRequest = {
   },
 };
 
+// Fine-tuning: horizontal position of subject within 9:16 portrait crop
+// Lower than 50% verschiebt den sichtbaren Bereich nach links (Subjekt rückt nach rechts ins Bild)
+const PORTRAIT_OBJECT_POSITION = "30% center";
+
 type InteractiveAvatarProps = {
   fullscreen?: boolean;
+  hideChat?: boolean;
+  forcePortrait?: boolean;
 };
 
-function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
+function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait = false }: InteractiveAvatarProps) {
   const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
     useStreamingAvatarSession();
-  const { startVoiceChat } = useVoiceChat();
+  const { startVoiceChat, stopVoiceChat, isVoiceChatActive, unmuteInputAudio, isVoiceChatLoading } = useVoiceChat();
+  const { startListening, stopListening } = useConversationState();
+  const { connectionQuality } = useConnectionQuality();
 
   const [config] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
+  const [showTextOverlay, setShowTextOverlay] = useState<boolean>(false);
 
   const mediaStream = useRef<HTMLVideoElement>(null);
   const startedOnMountRef = useRef<boolean>(false);
   const isMobile = useMediaQuery("(max-width: 639px)");
+  const reinitInProgressRef = useRef<boolean>(false);
+  const lastVoiceEventTsRef = useRef<number>(0);
+
+  async function waitFor(predicate: () => boolean, timeoutMs = 3000, stepMs = 50): Promise<boolean> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (predicate()) return true;
+      await new Promise((r) => setTimeout(r, stepMs));
+    }
+    return predicate();
+  }
 
   async function fetchAccessToken() {
     try {
@@ -80,6 +109,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
   }
 
   const startSessionV2 = useMemoizedFn(async (isVoiceChat: boolean) => {
+    const configToUse: StartAvatarRequest = { ...config, avatarName: getPreferredAvatarId() };
     try {
       const newToken = await fetchAccessToken();
       const avatar = initAvatar(newToken);
@@ -98,6 +128,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
       });
       avatar.on(StreamingEvents.USER_START, (event) => {
         console.log(">>>>> User started talking:", event);
+        lastVoiceEventTsRef.current = Date.now();
       });
       avatar.on(StreamingEvents.USER_STOP, (event) => {
         console.log(">>>>> User stopped talking:", event);
@@ -107,6 +138,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
       });
       avatar.on(StreamingEvents.USER_TALKING_MESSAGE, (event) => {
         console.log(">>>>> User talking message:", event);
+        lastVoiceEventTsRef.current = Date.now();
       });
       avatar.on(StreamingEvents.AVATAR_TALKING_MESSAGE, (event) => {
         console.log(">>>>> Avatar talking message:", event);
@@ -114,12 +146,11 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
       avatar.on(StreamingEvents.AVATAR_END_MESSAGE, (event) => {
         console.log(">>>>> Avatar end message:", event);
       });
-
-      console.log("Starting avatar with config:", config, {
+      console.log("Starting avatar with config:", configToUse, {
         basePath: process.env.NEXT_PUBLIC_BASE_API_URL,
       });
 
-      await startAvatar(config);
+      await startAvatar(configToUse);
 
       if (isVoiceChat) {
         await startVoiceChat();
@@ -127,8 +158,8 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
     } catch (error) {
       console.error("Error starting avatar session:", error);
       // Retry once with a known public avatar to help diagnose invalid custom IDs
-      if (config.avatarName !== AVATARS[0].avatar_id) {
-        const fallbackConfig = { ...config, avatarName: AVATARS[0].avatar_id };
+      if (configToUse.avatarName !== AVATARS[0].avatar_id) {
+        const fallbackConfig = { ...configToUse, avatarName: AVATARS[0].avatar_id };
         try {
           console.warn(
             "Retrying with public avatar to validate setup:",
@@ -143,6 +174,60 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
           console.error("Fallback start failed as well:", fallbackError);
         }
       }
+    }
+  });
+
+  // Robust re-init of voice transport if switching back from text fails
+  const ensureVoiceOperational = useMemoizedFn(async () => {
+    if (reinitInProgressRef.current) return;
+    reinitInProgressRef.current = true;
+    try {
+      // kurze Wartezeit
+      await new Promise((r) => setTimeout(r, 700));
+      const noUserEventRecently = Date.now() - lastVoiceEventTsRef.current > 2000;
+      const badConn = connectionQuality === ConnectionQuality.BAD || connectionQuality === ConnectionQuality.UNKNOWN;
+      if (badConn || noUserEventRecently) {
+        // 1) versuche Voice-Transport neu zu starten
+        await stopVoiceChat();
+        await new Promise((r) => setTimeout(r, 250));
+        await startVoiceChat(false);
+        unmuteInputAudio();
+        startListening();
+        await new Promise((r) => setTimeout(r, 700));
+        if (Date.now() - lastVoiceEventTsRef.current > 2000) {
+          // 2) harter Reset: Avatar-Stream neu aufbauen
+          if ([StreamingAvatarSessionState.CONNECTED, StreamingAvatarSessionState.CONNECTING].includes(sessionState)) {
+            await stopAvatar();
+            await waitFor(() => [StreamingAvatarSessionState.INACTIVE].includes(sessionState), 4000, 50);
+          }
+          // Nur starten, wenn wirklich INACTIVE
+          if ([StreamingAvatarSessionState.INACTIVE].includes(sessionState)) {
+            await startAvatar(config);
+            await waitFor(() => [StreamingAvatarSessionState.CONNECTED].includes(sessionState), 4000, 50);
+            await startVoiceChat(false);
+            unmuteInputAudio();
+            startListening();
+          }
+        }
+      } else {
+        unmuteInputAudio();
+      }
+    } finally {
+      reinitInProgressRef.current = false;
+    }
+  });
+
+  const resumeVoiceFromOverlay = useMemoizedFn(async () => {
+    // Close overlay and bring voice back reliably
+    setShowTextOverlay(false);
+    try {
+      await new Promise((r) => setTimeout(r, 100));
+      await startVoiceChat(false);
+      unmuteInputAudio();
+      startListening();
+      void ensureVoiceOperational();
+    } catch (e) {
+      console.error("Resume voice from overlay failed:", e);
     }
   });
 
@@ -170,7 +255,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
   }, [sessionState, startSessionV2]);
 
   return (
-    <div className={`w-full flex flex-col gap-4 ${fullscreen ? "h-full" : ""}`}>
+    <div className={`w-full flex flex-col gap-4 ${fullscreen || forcePortrait ? "h-full" : ""}`}>
       <div
         className={
           `flex flex-col overflow-hidden h-full ` +
@@ -180,7 +265,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
         <div
           className={
             `relative w-full overflow-hidden flex flex-col items-center justify-center ` +
-            (fullscreen ? "h-full" : "aspect-video")
+            (fullscreen || forcePortrait ? "h-full" : "aspect-video")
           }
         >
           {sessionState !== StreamingAvatarSessionState.INACTIVE && (
@@ -189,7 +274,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
                 {isMobile ? (
                   <div className="relative h-full max-h-full max-w-[100vw] aspect-[9/16] bg-black">
                     <div className="absolute inset-0">
-                      <AvatarVideo ref={mediaStream} fit="cover" objectPosition="35% center" />
+                      <AvatarVideo ref={mediaStream} fit="cover" objectPosition={PORTRAIT_OBJECT_POSITION} />
                     </div>
                   </div>
                 ) : (
@@ -200,29 +285,79 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
                   </div>
                 )}
               </div>
+            ) : forcePortrait ? (
+              <div className="relative w-full h-full bg-black">
+                <div className="absolute inset-0">
+                  <AvatarVideo ref={mediaStream} fit="cover" objectPosition={PORTRAIT_OBJECT_POSITION} />
+                </div>
+              </div>
             ) : (
               <AvatarVideo ref={mediaStream} />
             )
           )}
-          {/* Mikro-Overlay unten mittig im Videoframe */}
-          <div className="absolute bottom-5 left-1/2 -translate-x-1/2">
-            <MicOverlay />
-          </div>
-          {/* Close-Button oben rechts */}
-          <div className="absolute top-3 right-3">
-            <a
-              href="/"
-              aria-label="Schließen und zur Widget-Seite zurückkehren"
-              className="h-9 w-9 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 flex items-center justify-center hover:bg-white"
+          {/* Bottom controls: Mic center + TextChat toggle right */}
+          <div className="absolute bottom-5 inset-x-0 flex items-center justify-center gap-3 px-3">
+            {/* Mikro nur anzeigen, wenn kein Text-Overlay aktiv */}
+            {!showTextOverlay && <MicOverlay />}
+            <div className="flex-1" />
+            <button
+              disabled={isVoiceChatLoading}
+              onClick={async () => {
+                if (showTextOverlay) {
+                  // Wechsel zu Voice
+                  setShowTextOverlay(false);
+                  // Start Voice-Chat erneut (gleiche Session)
+                  try {
+                    // Mini-Delay, um den Transport vom Text-Modus zu lösen
+                    await new Promise((r) => setTimeout(r, 100));
+                    await startVoiceChat(false);
+                    // Sicherheitshalber explizit entmuten
+                    unmuteInputAudio();
+                    // Listening aktivieren, damit USER_START/STOP Events kommen
+                    startListening();
+                    // Nachlauf-Check
+                    void ensureVoiceOperational();
+                  } catch (e) {
+                    console.error("Start voice chat failed:", e);
+                  }
+                } else {
+                  // Wechsel zu Text: Voice sofort stoppen, damit nichts mehr mithört
+                  if (isVoiceChatActive) {
+                    await stopVoiceChat();
+                    // kurze Abkühlzeit, damit Transport sauber schließt
+                    await new Promise((r) => setTimeout(r, 300));
+                  }
+                  setShowTextOverlay(true);
+                }
+              }}
+              className="h-10 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 px-4 text-sm font-medium hover:bg-white"
+              aria-pressed={showTextOverlay}
+              aria-label="Text-Chat umschalten"
             >
-              <span className="text-lg leading-none">×</span>
-            </a>
+              {showTextOverlay ? "Voice" : "Text"}
+            </button>
           </div>
+
+          {showTextOverlay && (
+            <TextOverlay onClose={resumeVoiceFromOverlay} />
+          )}
+          {/* Close-Button oben rechts (nur im Vollbild/berater) */}
+          {fullscreen && (
+            <div className="absolute top-3 right-3">
+              <a
+                href="/"
+                aria-label="Schließen und zur Widget-Seite zurückkehren"
+                className="h-9 w-9 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 flex items-center justify-center hover:bg-white"
+              >
+                <span className="text-lg leading-none">×</span>
+              </a>
+            </div>
+          )}
         </div>
         <div
           className={
             `p-4 border-t border-zinc-700 w-full ` +
-            (fullscreen ? "hidden" : "flex flex-col gap-3 items-center justify-center")
+            (fullscreen || hideChat ? "hidden" : "flex flex-col gap-3 items-center justify-center")
           }
         >
           {sessionState === StreamingAvatarSessionState.CONNECTED ? (
@@ -241,7 +376,7 @@ function InteractiveAvatar({ fullscreen = false }: InteractiveAvatarProps) {
           )}
         </div>
       </div>
-      {sessionState === StreamingAvatarSessionState.CONNECTED && !fullscreen && (
+      {sessionState === StreamingAvatarSessionState.CONNECTED && !fullscreen && !hideChat && (
         <MessageHistory />
       )}
     </div>

@@ -1,12 +1,34 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 export default function SparkasseHeader() {
   const pathname = usePathname();
   const isWidgetVersion = pathname === "/";
+  const [selectedAvatarId, setSelectedAvatarId] = useState<string>("");
+
+  // Default: aktuell genutzter Avatar (falls gesetzt), sonst Fallback
+  const defaultAvatarId =
+    process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? "Ann_Therapist_public";
+
+  useEffect(() => {
+    const stored =
+      typeof window !== "undefined"
+        ? window.localStorage.getItem("heygen_selected_avatar_id")
+        : null;
+    setSelectedAvatarId(stored ?? defaultAvatarId);
+  }, [defaultAvatarId]);
+
+  function handleAvatarChange(newId: string) {
+    setSelectedAvatarId(newId);
+    try {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem("heygen_selected_avatar_id", newId);
+      }
+    } catch {}
+  }
 
   return (
     <header className="w-full bg-[#E60000] text-white">
@@ -25,6 +47,29 @@ export default function SparkasseHeader() {
             <a className="hover:opacity-100 opacity-90" href="#">Service-Center</a>
           </nav>
           <div className="flex items-center gap-3">
+            {/* Avatar Auswahl */}
+            <div className="hidden sm:flex items-center gap-2 bg-white/15 rounded px-2 py-1">
+              <label htmlFor="avatar-select" className="text-xs opacity-90">
+                Avatar
+              </label>
+              <select
+                id="avatar-select"
+                aria-label="Avatar auswählen"
+                className="bg-transparent text-white text-sm focus:outline-none"
+                value={selectedAvatarId}
+                onChange={(e) => handleAvatarChange(e.target.value)}
+              >
+                <option className="text-black" value={defaultAvatarId}>
+                  Alexander (Standard)
+                </option>
+                <option className="text-black" value="91dff0baa41b48c39d0956efa683ea53">
+                  Chiara
+                </option>
+                <option className="text-black" value="d50cd23ee8e0482aadc2e6b9bf6ee4c8">
+                  Moni
+                </option>
+              </select>
+            </div>
             <input
               aria-label="Suche"
               placeholder="Suche"

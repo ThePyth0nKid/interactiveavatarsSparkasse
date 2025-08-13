@@ -27,11 +27,14 @@ export const useVoiceChat = () => {
     [avatarRef, setIsMuted, setIsVoiceChatActive, setIsVoiceChatLoading],
   );
 
-  const stopVoiceChat = useCallback(() => {
+  const stopVoiceChat = useCallback(async () => {
     if (!avatarRef.current) return;
-    avatarRef.current?.closeVoiceChat();
-    setIsVoiceChatActive(false);
-    setIsMuted(true);
+    try {
+      await avatarRef.current?.closeVoiceChat();
+    } finally {
+      setIsVoiceChatActive(false);
+      setIsMuted(true);
+    }
   }, [avatarRef, setIsMuted, setIsVoiceChatActive]);
 
   const muteInputAudio = useCallback(() => {
