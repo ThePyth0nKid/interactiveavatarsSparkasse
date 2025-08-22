@@ -3,10 +3,11 @@ import { ConnectionQuality } from "@heygen/streaming-avatar";
 
 import { useConnectionQuality } from "../logic/useConnectionQuality";
 import { useStreamingAvatarSession } from "../logic/useStreamingAvatarSession";
-import { StreamingAvatarSessionState } from "../logic";
+import { StreamingAvatarSessionState, useStreamingAvatarContext } from "../logic";
 // removed in-video close button in favor of global close in InteractiveAvatar
 // import { Button } from "../Button";
 import LoadingOverlay from "../LoadingOverlay";
+import { useVoiceChat } from "../logic/useVoiceChat";
 
 type AvatarVideoProps = {
   fit?: "contain" | "cover";
@@ -17,8 +18,11 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
   ({ fit = "contain", objectPosition = "center" }, ref) => {
   const { sessionState, stopAvatar } = useStreamingAvatarSession();
   const { connectionQuality } = useConnectionQuality();
+  const { isFullyReady } = useStreamingAvatarContext();
+  const { isMicrophoneReady, isVoiceChatActive, isVoiceChatLoading } = useVoiceChat();
 
-  const isLoaded = sessionState === StreamingAvatarSessionState.CONNECTED;
+  // Show loading until everything is truly ready
+  const isLoaded = isFullyReady;
 
   return (
     <>
@@ -41,7 +45,32 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
       >
         <track kind="captions" />
       </video>
-      {!isLoaded && <LoadingOverlay />}
+      {!isLoaded && (
+        <LoadingOverlay 
+          message={
+            sessionState === StreamingAvatarSessionState.CONNECTING 
+              ? "Avatar wird geladen..." 
+              : sessionState === StreamingAvatarSessionState.CONNECTED && isVoiceChatLoading
+                ? "Mikrofon wird vorbereitet..."
+                : sessionState === StreamingAvatarSessionState.CONNECTED && !isMicrophoneReady && isVoiceChatActive
+                  ? "Mikrofon-Zugriff erforderlich"
+                  : sessionState === StreamingAvatarSessionState.CONNECTED && isMicrophoneReady && !isFullyReady
+                    ? "Berater wird vorbereitet..."
+                    : "Avatar wird geladen..."
+          }
+          subMessage={
+            sessionState === StreamingAvatarSessionState.CONNECTING 
+              ? "Verbindung wird hergestellt…" 
+              : sessionState === StreamingAvatarSessionState.CONNECTED && isVoiceChatLoading
+                ? "Audio-Verbindung wird aufgebaut…"
+                : sessionState === StreamingAvatarSessionState.CONNECTED && !isMicrophoneReady && isVoiceChatActive
+                  ? "Bitte erlauben Sie den Mikrofon-Zugriff für die Sprachfunktion"
+                  : sessionState === StreamingAvatarSessionState.CONNECTED && isMicrophoneReady && !isFullyReady
+                    ? "Finalisierung läuft…"
+                    : "Verbindung wird hergestellt…"
+          }
+        />
+      )}
     </>
   );
   },

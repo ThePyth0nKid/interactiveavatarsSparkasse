@@ -27,20 +27,19 @@ import { useMediaQuery } from "./logic/useMediaQuery";
 import { MicOverlay } from "./AvatarSession/MicOverlay";
 import { TextOverlay } from "./AvatarSession/TextOverlay";
 
-// Resolve avatar id from localStorage if available, otherwise env, then fallback list
+// Read custom avatar id from environment with a safe fallback
+const CUSTOM_AVATAR_ID =
+  process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? AVATARS[0].avatar_id;
+
 function getPreferredAvatarId(): string {
-  if (typeof window !== "undefined") {
-    const stored = window.localStorage.getItem("heygen_selected_avatar_id");
-    if (stored && stored.trim().length > 0) return stored;
-  }
-  return process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? AVATARS[0].avatar_id;
+  return CUSTOM_AVATAR_ID;
 }
 
 const DEFAULT_CONFIG: StartAvatarRequest = {
   // Qualität entsprechend Screenshot: high
   quality: AvatarQuality.High,
-  // Avatar-ID wird dynamisch ermittelt (Navbar-Auswahl > ENV > Fallback)
-  avatarName: getPreferredAvatarId(),
+  // Custom Avatar ID entsprechend Screenshot / Standard (nur Alexander)
+  avatarName: CUSTOM_AVATAR_ID,
   // Keine Knowledge Base ID gesetzt
   knowledgeId: undefined,
   voice: {
@@ -70,7 +69,7 @@ type InteractiveAvatarProps = {
 function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait = false }: InteractiveAvatarProps) {
   const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
     useStreamingAvatarSession();
-  const { startVoiceChat, stopVoiceChat, isVoiceChatActive, unmuteInputAudio, isVoiceChatLoading } = useVoiceChat();
+  const { startVoiceChat, stopVoiceChat, isVoiceChatActive, unmuteInputAudio, isVoiceChatLoading, isMicrophoneReady } = useVoiceChat();
   const { startListening, stopListening } = useConversationState();
   const { connectionQuality } = useConnectionQuality();
 

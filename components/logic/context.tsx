@@ -38,6 +38,12 @@ type StreamingAvatarContextProps = {
   stream: MediaStream | null;
   setStream: (stream: MediaStream | null) => void;
 
+  // New state for complete readiness (avatar + microphone ready)
+  isFullyReady: boolean;
+  setIsFullyReady: (isFullyReady: boolean) => void;
+  isMicrophoneReady: boolean;
+  setIsMicrophoneReady: (isMicrophoneReady: boolean) => void;
+
   messages: Message[];
   clearMessages: () => void;
   handleUserTalkingMessage: ({
@@ -76,6 +82,10 @@ const StreamingAvatarContext = React.createContext<StreamingAvatarContextProps>(
     setIsVoiceChatActive: () => {},
     stream: null,
     setStream: () => {},
+    isFullyReady: false,
+    setIsFullyReady: () => {},
+    isMicrophoneReady: false,
+    setIsMicrophoneReady: () => {},
     messages: [],
     clearMessages: () => {},
     handleUserTalkingMessage: () => {},
@@ -219,6 +229,18 @@ const useStreamingAvatarConnectionQualityState = () => {
   return { connectionQuality, setConnectionQuality };
 };
 
+const useStreamingAvatarReadinessState = () => {
+  const [isFullyReady, setIsFullyReady] = useState(false);
+  const [isMicrophoneReady, setIsMicrophoneReady] = useState(false);
+
+  return {
+    isFullyReady,
+    setIsFullyReady,
+    isMicrophoneReady,
+    setIsMicrophoneReady,
+  };
+};
+
 export const StreamingAvatarProvider = ({
   children,
   basePath,
@@ -233,6 +255,7 @@ export const StreamingAvatarProvider = ({
   const listeningState = useStreamingAvatarListeningState();
   const talkingState = useStreamingAvatarTalkingState();
   const connectionQualityState = useStreamingAvatarConnectionQualityState();
+  const readinessState = useStreamingAvatarReadinessState();
 
   return (
     <StreamingAvatarContext.Provider
@@ -245,6 +268,7 @@ export const StreamingAvatarProvider = ({
         ...listeningState,
         ...talkingState,
         ...connectionQualityState,
+        ...readinessState,
       }}
     >
       {children}
