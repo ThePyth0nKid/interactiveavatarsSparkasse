@@ -11,7 +11,7 @@ export default function SparkasseHeader() {
   return (
     <header className="w-full bg-[#E60000] text-white">
       <div className="mx-auto max-w-[1200px] px-4">
-        <div className="flex items-center justify-between h-14">
+        <div className="flex items-center justify-between h-24">
           <div className="flex items-center gap-4 font-semibold">
             <span className="text-xl">Sparkasse</span>
             <span className="hidden sm:inline opacity-90">Pforzheim Calw</span>
