@@ -12,24 +12,20 @@ export default function SparkasseHeader() {
     <header className="w-full bg-[#E60000] text-white">
       <div className="mx-auto max-w-[1200px] px-4">
         <div className="flex items-center justify-between h-24">
-          <div className="flex items-center gap-4 font-semibold">
-            <span className="text-xl">Sparkasse</span>
-            <span className="hidden sm:inline opacity-90">Pforzheim Calw</span>
+          {/* Links: Sparkasse Logo/Text */}
+          <div className="flex items-center font-semibold">
+            <span className="text-xl">Sparkasse Pforzheim Calw</span>
           </div>
-          <nav className="hidden md:flex items-center gap-6 text-sm opacity-95">
-            <a className="hover:opacity-100 opacity-90" href="#">Produkte</a>
-            <a className="hover:opacity-100 opacity-90" href="#">Firmenkunden</a>
-            <a className="hover:opacity-100 opacity-90" href="#">Private Banking</a>
-            <a className="hover:opacity-100 opacity-90" href="#">Ihre Sparkasse</a>
-            <a className="hover:opacity-100 opacity-90" href="#">Karriere</a>
-            <a className="hover:opacity-100 opacity-90" href="#">Service-Center</a>
-          </nav>
+          
+          {/* Zentral: Interactive Avatar Alex Titel */}
+          <div className="absolute left-1/2 transform -translate-x-1/2 hidden md:block">
+            <h1 className="text-lg lg:text-xl font-bold tracking-wider whitespace-nowrap">
+              INTERACTIVE AVATAR ALEX
+            </h1>
+          </div>
+          
+          {/* Rechts: Navigation und Buttons */}
           <div className="flex items-center gap-3">
-            <input
-              aria-label="Suche"
-              placeholder="Suche"
-              className="hidden sm:block px-3 py-1 rounded bg-white/15 placeholder-white/80 text-white text-sm focus:outline-none"
-            />
             {/* Version switch button */}
             {isWidgetVersion ? (
               <Link
@@ -46,9 +42,6 @@ export default function SparkasseHeader() {
                 Widget-Version
               </Link>
             )}
-            <button className="bg-white text-[#E60000] text-sm font-semibold rounded px-3 py-1">
-              Anmelden
-            </button>
           </div>
         </div>
       </div>

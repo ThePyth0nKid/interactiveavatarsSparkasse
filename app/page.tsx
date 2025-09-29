@@ -9,8 +9,8 @@ export default function App() {
       {/* Hero */}
       <section className="relative flex-1">
         <img
-          src="https://images.unsplash.com/photo-1504384308090-c894fdcc538d?q=80&w=2070&auto=format&fit=crop"
-          alt="Hero"
+          src="/bg_spk.jpg"
+          alt="Sparkasse Beraterin - Modernisierungsberatung"
           className="absolute inset-0 h-full w-full object-cover"
         />
         <div className="absolute inset-0 bg-black/20" />
