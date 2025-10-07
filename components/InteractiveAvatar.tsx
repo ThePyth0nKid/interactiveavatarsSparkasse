@@ -19,6 +19,7 @@ import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic";
 import { useConversationState } from "./logic/useConversationState";
 import { ConnectionQuality } from "@heygen/streaming-avatar";
 import { useConnectionQuality } from "./logic/useConnectionQuality";
+import { useInterrupt } from "./logic/useInterrupt";
 import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
 
@@ -70,8 +71,9 @@ function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait
   const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
     useStreamingAvatarSession();
   const { startVoiceChat, stopVoiceChat, isVoiceChatActive, unmuteInputAudio, isVoiceChatLoading, isMicrophoneReady } = useVoiceChat();
-  const { startListening, stopListening } = useConversationState();
+  const { startListening, stopListening, isAvatarTalking } = useConversationState();
   const { connectionQuality } = useConnectionQuality();
+  const { interrupt } = useInterrupt();
 
   const [config] = useState<StartAvatarRequest>(DEFAULT_CONFIG);
   const [showTextOverlay, setShowTextOverlay] = useState<boolean>(false);
@@ -115,9 +117,15 @@ function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait
 
       avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
         console.log("Avatar started talking", e);
+        // Deaktiviere Voice Activity Detection während Avatar spricht
+        stopListening();
       });
       avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
         console.log("Avatar stopped talking", e);
+        // Reaktiviere Voice Activity Detection nur wenn Voice Chat aktiv ist
+        if (isVoiceChatActive) {
+          startListening();
+        }
       });
       avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
         console.log("Stream disconnected");
@@ -294,47 +302,67 @@ function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait
               <AvatarVideo ref={mediaStream} />
             )
           )}
-          {/* Bottom controls: Mic center + TextChat toggle right */}
+          {/* Bottom controls: Interrupt + Mic zentriert, TextChat toggle rechts */}
           <div className="absolute bottom-5 inset-x-0 flex items-center justify-center gap-3 px-3">
-            {/* Mikro nur anzeigen, wenn kein Text-Overlay aktiv */}
-            {!showTextOverlay && <MicOverlay />}
+            {/* Linker Spacer für Balance */}
             <div className="flex-1" />
-            <button
-              disabled={isVoiceChatLoading}
-              onClick={async () => {
-                if (showTextOverlay) {
-                  // Wechsel zu Voice
-                  setShowTextOverlay(false);
-                  // Start Voice-Chat erneut (gleiche Session)
-                  try {
-                    // Mini-Delay, um den Transport vom Text-Modus zu lösen
-                    await new Promise((r) => setTimeout(r, 100));
-                    await startVoiceChat(false);
-                    // Sicherheitshalber explizit entmuten
-                    unmuteInputAudio();
-                    // Listening aktivieren, damit USER_START/STOP Events kommen
-                    startListening();
-                    // Nachlauf-Check
-                    void ensureVoiceOperational();
-                  } catch (e) {
-                    console.error("Start voice chat failed:", e);
+            
+            {/* Zentrierter Bereich: Interrupt-Button + Mikrofon */}
+            <div className="flex items-center gap-3">
+              {/* Interrupt-Button (nur wenn Avatar spricht und kein Text-Overlay) */}
+              {!showTextOverlay && sessionState === StreamingAvatarSessionState.CONNECTED && (
+                <button
+                  onClick={interrupt}
+                  disabled={!isAvatarTalking}
+                  className="h-10 rounded-full bg-[#E60000] text-white shadow-lg border border-black/10 px-4 text-sm font-medium hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition-opacity"
+                  aria-label="Avatar unterbrechen"
+                >
+                  Unterbrechen
+                </button>
+              )}
+              {/* Mikrofon zentriert */}
+              {!showTextOverlay && <MicOverlay />}
+            </div>
+            
+            {/* Rechter Spacer + Text/Voice Toggle */}
+            <div className="flex-1 flex justify-end">
+              <button
+                disabled={isVoiceChatLoading}
+                onClick={async () => {
+                  if (showTextOverlay) {
+                    // Wechsel zu Voice
+                    setShowTextOverlay(false);
+                    // Start Voice-Chat erneut (gleiche Session)
+                    try {
+                      // Mini-Delay, um den Transport vom Text-Modus zu lösen
+                      await new Promise((r) => setTimeout(r, 100));
+                      await startVoiceChat(false);
+                      // Sicherheitshalber explizit entmuten
+                      unmuteInputAudio();
+                      // Listening aktivieren, damit USER_START/STOP Events kommen
+                      startListening();
+                      // Nachlauf-Check
+                      void ensureVoiceOperational();
+                    } catch (e) {
+                      console.error("Start voice chat failed:", e);
+                    }
+                  } else {
+                    // Wechsel zu Text: Voice sofort stoppen, damit nichts mehr mithört
+                    if (isVoiceChatActive) {
+                      await stopVoiceChat();
+                      // kurze Abkühlzeit, damit Transport sauber schließt
+                      await new Promise((r) => setTimeout(r, 300));
+                    }
+                    setShowTextOverlay(true);
                   }
-                } else {
-                  // Wechsel zu Text: Voice sofort stoppen, damit nichts mehr mithört
-                  if (isVoiceChatActive) {
-                    await stopVoiceChat();
-                    // kurze Abkühlzeit, damit Transport sauber schließt
-                    await new Promise((r) => setTimeout(r, 300));
-                  }
-                  setShowTextOverlay(true);
-                }
-              }}
-              className="h-10 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 px-4 text-sm font-medium hover:bg-white"
-              aria-pressed={showTextOverlay}
-              aria-label="Text-Chat umschalten"
-            >
-              {showTextOverlay ? "Voice" : "Text"}
-            </button>
+                }}
+                className="h-10 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 px-4 text-sm font-medium hover:bg-white"
+                aria-pressed={showTextOverlay}
+                aria-label="Text-Chat umschalten"
+              >
+                {showTextOverlay ? "Voice" : "Text"}
+              </button>
+            </div>
           </div>
 
           {showTextOverlay && (

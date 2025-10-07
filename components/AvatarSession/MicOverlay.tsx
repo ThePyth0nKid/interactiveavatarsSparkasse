@@ -9,7 +9,7 @@ import { MicIcon, MicOffIcon } from "../Icons";
 export const MicOverlay: React.FC = () => {
   const { muteInputAudio, unmuteInputAudio, isMuted, isVoiceChatLoading } =
     useVoiceChat();
-  const { isUserTalking } = useConversationState();
+  const { isUserTalking, isAvatarTalking } = useConversationState();
 
   const toggleMute = () => {
     if (isMuted) {
@@ -21,10 +21,18 @@ export const MicOverlay: React.FC = () => {
 
   return (
     <button
-      aria-label={isMuted ? "Mikrofon einschalten" : "Mikrofon stummschalten"}
-      disabled={isVoiceChatLoading}
+      aria-label={
+        isAvatarTalking 
+          ? "Avatar spricht - Unterbrechen-Button verwenden" 
+          : isMuted 
+          ? "Mikrofon einschalten" 
+          : "Mikrofon stummschalten"
+      }
+      disabled={isVoiceChatLoading || isAvatarTalking}
       onClick={toggleMute}
-      className="relative z-10 h-12 w-12 rounded-full bg-[#E60000] text-white shadow-lg border border-black/10 flex items-center justify-center hover:brightness-110 disabled:opacity-60 mx-auto"
+      className={`relative z-10 h-12 w-12 rounded-full bg-[#E60000] text-white shadow-lg border border-black/10 flex items-center justify-center hover:brightness-110 disabled:opacity-60 mx-auto transition-opacity ${
+        isAvatarTalking ? 'cursor-not-allowed' : ''
+      }`}
     >
       <span
         className={`absolute -inset-1 rounded-full ring-2 ring-[#E60000] ${

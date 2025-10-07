@@ -4,6 +4,7 @@ import React from "react";
 import { useVoiceChat } from "../logic/useVoiceChat";
 import { Button } from "../Button";
 import { useInterrupt } from "../logic/useInterrupt";
+import { useConversationState } from "../logic/useConversationState";
 
 import { AudioInput } from "./AudioInput";
 import { TextInput } from "./TextInput";
@@ -16,6 +17,7 @@ export const AvatarControls: React.FC = () => {
     stopVoiceChat,
   } = useVoiceChat();
   const { interrupt } = useInterrupt();
+  const { isAvatarTalking } = useConversationState();
 
   return (
     <div className="flex flex-col gap-3 relative w-full items-center">
@@ -51,7 +53,11 @@ export const AvatarControls: React.FC = () => {
       </ToggleGroup>
       {isVoiceChatActive || isVoiceChatLoading ? <AudioInput /> : <TextInput />}
       <div className="absolute top-[-64px] right-2">
-        <Button className="!bg-zinc-700 !text-white !px-3 !py-1.5 !text-xs" onClick={interrupt}>
+        <Button 
+          className="!bg-[#E60000] !text-white !px-4 !py-2 !text-sm !shadow-lg hover:!brightness-110 disabled:!opacity-50 disabled:!cursor-not-allowed" 
+          onClick={interrupt}
+          disabled={!isAvatarTalking}
+        >
           Unterbrechen
         </Button>
       </div>
