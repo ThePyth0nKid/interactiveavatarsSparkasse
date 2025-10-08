@@ -81,13 +81,21 @@ export const useVoiceChat = () => {
   }, [avatarRef, setIsMuted, setIsVoiceChatActive, setIsMicrophoneReady, setIsFullyReady]);
 
   const muteInputAudio = useCallback(() => {
-    if (!avatarRef.current) return;
+    if (!avatarRef.current) {
+      console.log('[useVoiceChat] muteInputAudio - avatarRef not available');
+      return;
+    }
+    console.log('[useVoiceChat] muteInputAudio() called - SDK muteInputAudio()');
     avatarRef.current?.muteInputAudio();
     setIsMuted(true);
   }, [avatarRef, setIsMuted]);
 
   const unmuteInputAudio = useCallback(() => {
-    if (!avatarRef.current) return;
+    if (!avatarRef.current) {
+      console.log('[useVoiceChat] unmuteInputAudio - avatarRef not available');
+      return;
+    }
+    console.log('[useVoiceChat] unmuteInputAudio() called - SDK unmuteInputAudio()');
     avatarRef.current?.unmuteInputAudio();
     setIsMuted(false);
   }, [avatarRef, setIsMuted]);

@@ -70,7 +70,7 @@ type InteractiveAvatarProps = {
 function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait = false }: InteractiveAvatarProps) {
   const { initAvatar, startAvatar, stopAvatar, sessionState, stream } =
     useStreamingAvatarSession();
-  const { startVoiceChat, stopVoiceChat, isVoiceChatActive, unmuteInputAudio, isVoiceChatLoading, isMicrophoneReady } = useVoiceChat();
+  const { startVoiceChat, stopVoiceChat, isVoiceChatActive, muteInputAudio, unmuteInputAudio, isVoiceChatLoading, isMicrophoneReady } = useVoiceChat();
   const { startListening, stopListening, isAvatarTalking } = useConversationState();
   const { connectionQuality } = useConnectionQuality();
   const { interrupt } = useInterrupt();
@@ -115,18 +115,8 @@ function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait
       const newToken = await fetchAccessToken();
       const avatar = initAvatar(newToken);
 
-      avatar.on(StreamingEvents.AVATAR_START_TALKING, (e) => {
-        console.log("Avatar started talking", e);
-        // Deaktiviere Voice Activity Detection während Avatar spricht
-        stopListening();
-      });
-      avatar.on(StreamingEvents.AVATAR_STOP_TALKING, (e) => {
-        console.log("Avatar stopped talking", e);
-        // Reaktiviere Voice Activity Detection nur wenn Voice Chat aktiv ist
-        if (isVoiceChatActive) {
-          startListening();
-        }
-      });
+      // Event-Handler werden zentral in useStreamingAvatarSession.ts verwaltet
+      // State-Updates für isAvatarTalking lösen useEffect aus (siehe unten)
       avatar.on(StreamingEvents.STREAM_DISCONNECTED, () => {
         console.log("Stream disconnected");
       });
@@ -250,6 +240,23 @@ function InteractiveAvatar({ fullscreen = false, hideChat = false, forcePortrait
       };
     }
   }, [mediaStream, stream]);
+
+  // Listening-Steuerung basierend auf Avatar-Sprechstatus
+  useEffect(() => {
+    console.log('[Listening Control] isAvatarTalking:', isAvatarTalking, 'isVoiceChatActive:', isVoiceChatActive, 'showTextOverlay:', showTextOverlay);
+    
+    if (isAvatarTalking) {
+      // Avatar spricht -> Listening stoppen UND Mikrofon muten um Unterbrechungen zu verhindern
+      console.log('[Listening Control] Avatar started talking - STOPPING listening + MUTING audio');
+      stopListening();
+      muteInputAudio();
+    } else if (isVoiceChatActive && !showTextOverlay) {
+      // Avatar fertig + Voice Chat aktiv + kein Text-Overlay -> Listening reaktivieren UND Mikrofon unmuten
+      console.log('[Listening Control] Avatar stopped talking - STARTING listening + UNMUTING audio');
+      startListening();
+      unmuteInputAudio();
+    }
+  }, [isAvatarTalking, isVoiceChatActive, showTextOverlay, stopListening, startListening, muteInputAudio, unmuteInputAudio]);
 
   // Auto-start voice chat on first load
   useEffect(() => {

@@ -102,15 +102,19 @@ export const useStreamingAvatarSession = () => {
           setConnectionQuality(detail),
       );
       avatarRef.current.on(StreamingEvents.USER_START, () => {
+        console.log('[SDK Event] USER_START - setIsUserTalking(true)');
         setIsUserTalking(true);
       });
       avatarRef.current.on(StreamingEvents.USER_STOP, () => {
+        console.log('[SDK Event] USER_STOP - setIsUserTalking(false)');
         setIsUserTalking(false);
       });
       avatarRef.current.on(StreamingEvents.AVATAR_START_TALKING, () => {
+        console.log('[SDK Event] AVATAR_START_TALKING - setIsAvatarTalking(true)');
         setIsAvatarTalking(true);
       });
       avatarRef.current.on(StreamingEvents.AVATAR_STOP_TALKING, () => {
+        console.log('[SDK Event] AVATAR_STOP_TALKING - setIsAvatarTalking(false)');
         setIsAvatarTalking(false);
       });
       avatarRef.current.on(
