@@ -144,23 +144,26 @@ function InteractiveAvatar({
     }
   }, [sessionState, startSession]);
 
-  // When the LiveKit stream is ready, attach SDK tracks to our video element
-  // and trigger an opening greeting once. The greeting confirms the avatar
-  // audio pipeline works end-to-end without depending on the user's mic.
+  // When the LiveKit stream is ready, attach SDK tracks to our video element.
+  // The opening greeting is deferred to handleAudioReady (fires after the
+  // user's unmute click) so the user actually hears it. Triggering it here
+  // would speak into a muted pipeline.
   useEffect(() => {
     if (!isStreamReady || !mediaStream.current) return;
     const video = mediaStream.current;
     attachMedia(video);
+  }, [isStreamReady, attachMedia]);
 
-    if (!greetedRef.current && sessionRef.current) {
-      greetedRef.current = true;
-      try {
-        sessionRef.current.repeat(OPENING_GREETING);
-      } catch (err) {
-        console.warn("[avatar] opening greeting failed", err);
-      }
+  const handleAudioReady = useMemoizedFn(() => {
+    if (greetedRef.current || !sessionRef.current) return;
+    greetedRef.current = true;
+    try {
+      sessionRef.current.repeat(OPENING_GREETING);
+      console.info("[avatar] opening greeting triggered post-unmute");
+    } catch (err) {
+      console.warn("[avatar] opening greeting failed", err);
     }
-  }, [isStreamReady, attachMedia, sessionRef]);
+  });
 
   // Switch listening on/off based on who is speaking. While the avatar talks,
   // we mute the user's mic so it doesn't bleed back into the STT and trigger
@@ -231,6 +234,7 @@ function InteractiveAvatar({
                         ref={mediaStream}
                         fit="cover"
                         objectPosition={PORTRAIT_OBJECT_POSITION}
+                        onAudioReady={handleAudioReady}
                       />
                     </div>
                   </div>
@@ -241,6 +245,7 @@ function InteractiveAvatar({
                         ref={mediaStream}
                         fit="contain"
                         objectPosition="center center"
+                        onAudioReady={handleAudioReady}
                       />
                     </div>
                   </div>
@@ -253,11 +258,12 @@ function InteractiveAvatar({
                     ref={mediaStream}
                     fit="cover"
                     objectPosition={PORTRAIT_OBJECT_POSITION}
+                    onAudioReady={handleAudioReady}
                   />
                 </div>
               </div>
             ) : (
-              <AvatarVideo ref={mediaStream} />
+              <AvatarVideo ref={mediaStream} onAudioReady={handleAudioReady} />
             ))}
           <div className="absolute bottom-5 inset-x-0 flex items-center justify-center gap-3 px-3">
             <div className="flex-1" />

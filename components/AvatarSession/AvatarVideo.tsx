@@ -17,26 +17,22 @@ import { useVoiceChat } from "../logic/useVoiceChat";
 interface AvatarVideoProps {
   fit?: "contain" | "cover";
   objectPosition?: string;
+  onAudioReady?: () => void;
 }
 
-// Audio architecture: the previous build proved that audio data DOES reach
-// the browser (Web Audio analyser saw range=146 on the track) but the
-// <video> element on desktop Windows Chrome silently drops the audio output
-// even when muted=false, volume=1, paused=false, setSinkId('default') and
-// audio track muted=false. This is a known issue with HTMLMediaElement
-// audio output on some Windows audio driver / device configurations.
+// Audio architecture (after researching LiveKit + webrtchacks):
+// Chromium has a documented quirk where createMediaStreamSource(remoteTrack)
+// emits silence unless an HTMLMediaElement is ALSO consuming that exact
+// MediaStreamTrack — the WebRTC audio render path is only "pumped" by media
+// elements, not by AudioContext. Our <video> is muted (necessary for
+// autoplay), so Web Audio API alone gets silence.
 //
-// Solution: bypass <video> audio entirely. Keep <video> permanently muted
-// (only used for picture) and route the audio MediaStreamTrack through
-// Web Audio API into AudioContext.destination, which uses the system
-// speaker output directly. This is the same path Web Audio uses for
-// every browser sound and reliably reaches the speakers.
-type WindowWithWebkitAudio = Window & {
-  webkitAudioContext?: typeof AudioContext;
-};
-
+// Solution: a dedicated <audio> element receives an audio-only MediaStream
+// built from the remote audio track. The <video> stays muted (picture only).
+// On the user's gesture we set audio.muted = false and await audio.play().
+// This is the canonical LiveKit pattern (RemoteAudioTrack.attach()).
 export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
-  ({ fit = "contain", objectPosition = "center" }, ref) => {
+  ({ fit = "contain", objectPosition = "center", onAudioReady }, ref) => {
     const { sessionState } = useStreamingAvatarSession();
     const { connectionQuality } = useConnectionQuality();
     const { isStreamReady } = useStreamingAvatarContext();
@@ -44,14 +40,13 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
       useVoiceChat();
 
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
+    const audioElRef = useRef<HTMLAudioElement | null>(null);
     useImperativeHandle(ref, () => localVideoRef.current as HTMLVideoElement);
 
     const [needsUnmute, setNeedsUnmute] = useState<boolean>(true);
-    const audioCtxRef = useRef<AudioContext | null>(null);
-    const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-    const audioGainRef = useRef<GainNode | null>(null);
-    const routedTrackIdRef = useRef<string | null>(null);
     const startedMutedRef = useRef<boolean>(false);
+    const routedTrackIdRef = useRef<string | null>(null);
+    const audioReadyFiredRef = useRef<boolean>(false);
 
     const isVideoReady =
       sessionState === StreamingAvatarSessionState.CONNECTED && isStreamReady;
@@ -60,125 +55,96 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     const showMicPermissionHint =
       isVideoReady && isVoiceChatActive && !isMicrophoneReady;
 
-    const ensureAudioContext = useCallback((): AudioContext | null => {
-      if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
-        return audioCtxRef.current;
-      }
-      const Ctor =
-        window.AudioContext ||
-        (window as unknown as WindowWithWebkitAudio).webkitAudioContext;
-      if (!Ctor) {
-        console.error("[avatar] AudioContext not supported");
-        return null;
-      }
-      audioCtxRef.current = new Ctor();
-      console.info("[avatar] AudioContext created", {
-        state: audioCtxRef.current.state,
-        sampleRate: audioCtxRef.current.sampleRate,
-      });
-      return audioCtxRef.current;
-    }, []);
-
-    const routeAudioToSpeakers = useCallback(() => {
+    const attachAudioToElement = useCallback((): boolean => {
       const video = localVideoRef.current;
-      if (!video) return false;
+      const audioEl = audioElRef.current;
+      if (!video || !audioEl) return false;
       const stream = video.srcObject as MediaStream | null;
       if (!stream) return false;
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length === 0) return false;
       const track = audioTracks[0];
-      // Already routing this exact track? Skip — re-creating the source node
-      // detaches the previous one and can introduce gaps.
-      if (routedTrackIdRef.current === track.id && audioSourceRef.current) {
+
+      if (routedTrackIdRef.current === track.id) {
         return true;
-      }
-
-      const ctx = ensureAudioContext();
-      if (!ctx) return false;
-      if (ctx.state === "suspended") {
-        void ctx.resume();
-      }
-
-      // Tear down any previous source node from a stale track.
-      if (audioSourceRef.current) {
-        try {
-          audioSourceRef.current.disconnect();
-        } catch {
-          /* ignore */
-        }
-        audioSourceRef.current = null;
-      }
-      if (audioGainRef.current) {
-        try {
-          audioGainRef.current.disconnect();
-        } catch {
-          /* ignore */
-        }
-        audioGainRef.current = null;
       }
 
       try {
         track.enabled = true;
-        const source = ctx.createMediaStreamSource(new MediaStream([track]));
-        const gain = ctx.createGain();
-        gain.gain.value = 1.0;
-        source.connect(gain);
-        gain.connect(ctx.destination);
-        audioSourceRef.current = source;
-        audioGainRef.current = gain;
+        const audioOnlyStream = new MediaStream([track]);
+        audioEl.srcObject = audioOnlyStream;
+        audioEl.volume = 1.0;
         routedTrackIdRef.current = track.id;
-        console.info("[avatar] audio routed to AudioContext.destination", {
+        console.info("[avatar] audio attached to <audio> element", {
           trackId: track.id,
           trackMuted: String(track.muted),
           trackEnabled: String(track.enabled),
           trackReadyState: track.readyState,
-          ctxState: ctx.state,
         });
         return true;
       } catch (err) {
-        console.error("[avatar] routeAudioToSpeakers failed", err);
+        console.error("[avatar] attachAudioToElement failed", err);
         return false;
       }
-    }, [ensureAudioContext]);
+    }, []);
 
-    // When the stream is ready: start muted-autoplay so the avatar is
-    // visible. Audio routing happens on the user gesture in handleUnmute.
+    // When the stream is ready: attach audio track to dedicated <audio>
+    // element AND start muted-autoplay on <video> for the picture.
     useEffect(() => {
       const video = localVideoRef.current;
       if (!isVideoReady || !video) return;
-      if (startedMutedRef.current) return;
 
-      const tryMutedPlay = async () => {
+      const tryStart = async () => {
         const stream = video.srcObject as MediaStream | null;
         if (!stream || stream.getVideoTracks().length === 0) return;
-        startedMutedRef.current = true;
-        // <video> is permanently muted — audio plays via Web Audio API.
-        video.muted = true;
-        try {
-          await video.play();
-          console.info("[avatar] muted autoplay ok", {
-            videoTracks: stream.getVideoTracks().length,
-            audioTracks: stream.getAudioTracks().length,
-          });
-        } catch (err) {
-          console.warn("[avatar] muted autoplay failed", err);
+
+        attachAudioToElement();
+
+        if (!startedMutedRef.current) {
+          startedMutedRef.current = true;
+          video.muted = true;
+          try {
+            await video.play();
+            console.info("[avatar] muted video autoplay ok", {
+              videoTracks: stream.getVideoTracks().length,
+              audioTracks: stream.getAudioTracks().length,
+            });
+          } catch (err) {
+            console.warn("[avatar] muted video autoplay failed", err);
+          }
         }
       };
 
-      void tryMutedPlay();
-      const onLoadedMetadata = () => void tryMutedPlay();
+      void tryStart();
+      const onLoadedMetadata = () => void tryStart();
       video.addEventListener("loadedmetadata", onLoadedMetadata);
       return () => {
         video.removeEventListener("loadedmetadata", onLoadedMetadata);
       };
-    }, [isVideoReady]);
+    }, [isVideoReady, attachAudioToElement]);
+
+    // Re-attach when the audio track changes (SDK can re-publish).
+    useEffect(() => {
+      if (!isVideoReady) return;
+      const video = localVideoRef.current;
+      if (!video) return;
+      const onLoadedMetadata = () => attachAudioToElement();
+      video.addEventListener("loadedmetadata", onLoadedMetadata);
+      return () => {
+        video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      };
+    }, [isVideoReady, attachAudioToElement]);
 
     const handleUnmute = useCallback(async () => {
       console.info("[avatar] handleUnmute: user gesture received");
       const video = localVideoRef.current;
-      if (!video) return;
+      const audioEl = audioElRef.current;
+      if (!video || !audioEl) return;
 
-      // Keep <video> muted forever — audio goes through Web Audio API.
+      // Make sure audio track is attached.
+      attachAudioToElement();
+
+      // <video> stays muted forever — picture only.
       video.muted = true;
       try {
         await video.play();
@@ -186,69 +152,36 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         /* ignore */
       }
 
-      const ctx = ensureAudioContext();
-      if (ctx && ctx.state === "suspended") {
-        try {
-          await ctx.resume();
-          console.info("[avatar] AudioContext resumed", { state: ctx.state });
-        } catch (err) {
-          console.warn("[avatar] AudioContext.resume() failed", err);
+      // <audio> carries the speech.
+      audioEl.muted = false;
+      audioEl.volume = 1.0;
+      try {
+        if (typeof (audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId === "function") {
+          await (audioEl as HTMLAudioElement & { setSinkId: (id: string) => Promise<void> }).setSinkId("");
         }
+      } catch (err) {
+        console.warn("[avatar] setSinkId failed (non-fatal)", err);
       }
-
-      const ok = routeAudioToSpeakers();
-      if (!ok) {
-        console.warn(
-          "[avatar] audio routing not yet possible — will retry on track ready",
-        );
+      try {
+        await audioEl.play();
+        console.info("[avatar] <audio> play() ok", {
+          muted: String(audioEl.muted),
+          volume: String(audioEl.volume),
+          paused: String(audioEl.paused),
+          readyState: audioEl.readyState,
+          currentTime: audioEl.currentTime,
+        });
+      } catch (err) {
+        console.error("[avatar] <audio> play() failed", err);
       }
 
       setNeedsUnmute(false);
-    }, [ensureAudioContext, routeAudioToSpeakers]);
 
-    // Re-route whenever the audio track in the video element changes (e.g.
-    // SDK re-attaches after reconnect). Only effective AFTER the user has
-    // unmuted, since an AudioContext requires user gesture to start.
-    useEffect(() => {
-      if (needsUnmute) return;
-      const video = localVideoRef.current;
-      if (!video) return;
-      routeAudioToSpeakers();
-      const onLoadedMetadata = () => routeAudioToSpeakers();
-      video.addEventListener("loadedmetadata", onLoadedMetadata);
-      return () => {
-        video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      };
-    }, [needsUnmute, routeAudioToSpeakers, isVideoReady]);
-
-    useEffect(() => {
-      return () => {
-        if (audioSourceRef.current) {
-          try {
-            audioSourceRef.current.disconnect();
-          } catch {
-            /* ignore */
-          }
-        }
-        if (audioGainRef.current) {
-          try {
-            audioGainRef.current.disconnect();
-          } catch {
-            /* ignore */
-          }
-        }
-        if (
-          audioCtxRef.current &&
-          audioCtxRef.current.state !== "closed"
-        ) {
-          void audioCtxRef.current.close();
-        }
-        audioSourceRef.current = null;
-        audioGainRef.current = null;
-        audioCtxRef.current = null;
-        routedTrackIdRef.current = null;
-      };
-    }, []);
+      if (!audioReadyFiredRef.current) {
+        audioReadyFiredRef.current = true;
+        onAudioReady?.();
+      }
+    }, [attachAudioToElement, onAudioReady]);
 
     return (
       <>
@@ -272,6 +205,15 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         >
           <track kind="captions" />
         </video>
+        <audio
+          ref={audioElRef}
+          autoPlay
+          playsInline
+          muted
+          style={{ display: "none" }}
+        >
+          <track kind="captions" />
+        </audio>
         {!isVideoReady && (
           <LoadingOverlay
             message={
