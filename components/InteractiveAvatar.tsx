@@ -22,6 +22,10 @@ import { MicOverlay } from "./AvatarSession/MicOverlay";
 import { TextOverlay } from "./AvatarSession/TextOverlay";
 
 const PREFERRED_AVATAR_ID = AVATARS[0].avatar_id;
+const PREFERRED_VOICE_ID =
+  process.env.NEXT_PUBLIC_LIVEAVATAR_VOICE_ID ?? null;
+const PREFERRED_CONTEXT_ID =
+  process.env.NEXT_PUBLIC_LIVEAVATAR_CONTEXT_ID ?? null;
 
 const OPENING_GREETING =
   "Hallo, ich bin Alex, Ihr digitaler Berater der Sparkasse Pforzheim Calw. Wie kann ich Ihnen heute weiterhelfen?";
@@ -31,11 +35,15 @@ const PORTRAIT_OBJECT_POSITION = "30% center";
 interface SessionConfig {
   avatar_id: string;
   language: string;
+  voice_id: string | null;
+  context_id: string | null;
 }
 
 const DEFAULT_CONFIG: SessionConfig = {
   avatar_id: PREFERRED_AVATAR_ID,
   language: "de",
+  voice_id: PREFERRED_VOICE_ID,
+  context_id: PREFERRED_CONTEXT_ID,
 };
 
 interface TokenResponse {
@@ -58,6 +66,8 @@ async function fetchSessionToken(
     body: JSON.stringify({
       avatar_id: sessionConfig.avatar_id,
       language: sessionConfig.language,
+      voice_id: sessionConfig.voice_id,
+      context_id: sessionConfig.context_id,
     }),
   });
 
