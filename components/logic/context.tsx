@@ -1,8 +1,8 @@
-import StreamingAvatar, {
+import {
+  AgentEventsEnum,
   ConnectionQuality,
-  StreamingTalkingMessageEvent,
-  UserTalkingMessageEvent,
-} from "@heygen/streaming-avatar";
+  LiveAvatarSession,
+} from "@heygen/liveavatar-web-sdk";
 import React, { useRef, useState } from "react";
 
 export enum StreamingAvatarSessionState {
@@ -22,9 +22,19 @@ export interface Message {
   content: string;
 }
 
-type StreamingAvatarContextProps = {
-  avatarRef: React.MutableRefObject<StreamingAvatar | null>;
-  basePath?: string;
+export type TranscriptionEvent = {
+  event_type:
+    | AgentEventsEnum.USER_TRANSCRIPTION
+    | AgentEventsEnum.USER_TRANSCRIPTION_CHUNK
+    | AgentEventsEnum.AVATAR_TRANSCRIPTION
+    | AgentEventsEnum.AVATAR_TRANSCRIPTION_CHUNK;
+  event_id: string;
+  text: string;
+};
+
+export type StreamingAvatarContextProps = {
+  sessionRef: React.MutableRefObject<LiveAvatarSession | null>;
+  apiUrl?: string;
 
   isMuted: boolean;
   setIsMuted: (isMuted: boolean) => void;
@@ -35,10 +45,12 @@ type StreamingAvatarContextProps = {
 
   sessionState: StreamingAvatarSessionState;
   setSessionState: (sessionState: StreamingAvatarSessionState) => void;
-  stream: MediaStream | null;
-  setStream: (stream: MediaStream | null) => void;
 
-  // New state for complete readiness (avatar + microphone ready)
+  // Replaces old `stream: MediaStream | null`. The LiveAvatar SDK attaches
+  // tracks directly to a media element via `session.attach(element)`.
+  isStreamReady: boolean;
+  setIsStreamReady: (isStreamReady: boolean) => void;
+
   isFullyReady: boolean;
   setIsFullyReady: (isFullyReady: boolean) => void;
   isMicrophoneReady: boolean;
@@ -46,16 +58,8 @@ type StreamingAvatarContextProps = {
 
   messages: Message[];
   clearMessages: () => void;
-  handleUserTalkingMessage: ({
-    detail,
-  }: {
-    detail: UserTalkingMessageEvent;
-  }) => void;
-  handleStreamingTalkingMessage: ({
-    detail,
-  }: {
-    detail: StreamingTalkingMessageEvent;
-  }) => void;
+  handleUserTranscriptionChunk: (event: TranscriptionEvent) => void;
+  handleAvatarTranscriptionChunk: (event: TranscriptionEvent) => void;
   handleEndMessage: () => void;
 
   isListening: boolean;
@@ -71,7 +75,7 @@ type StreamingAvatarContextProps = {
 
 const StreamingAvatarContext = React.createContext<StreamingAvatarContextProps>(
   {
-    avatarRef: { current: null },
+    sessionRef: { current: null },
     isMuted: true,
     setIsMuted: () => {},
     isVoiceChatLoading: false,
@@ -80,16 +84,16 @@ const StreamingAvatarContext = React.createContext<StreamingAvatarContextProps>(
     setSessionState: () => {},
     isVoiceChatActive: false,
     setIsVoiceChatActive: () => {},
-    stream: null,
-    setStream: () => {},
+    isStreamReady: false,
+    setIsStreamReady: () => {},
     isFullyReady: false,
     setIsFullyReady: () => {},
     isMicrophoneReady: false,
     setIsMicrophoneReady: () => {},
     messages: [],
     clearMessages: () => {},
-    handleUserTalkingMessage: () => {},
-    handleStreamingTalkingMessage: () => {},
+    handleUserTranscriptionChunk: () => {},
+    handleAvatarTranscriptionChunk: () => {},
     handleEndMessage: () => {},
     isListening: false,
     setIsListening: () => {},
@@ -106,13 +110,13 @@ const useStreamingAvatarSessionState = () => {
   const [sessionState, setSessionState] = useState(
     StreamingAvatarSessionState.INACTIVE,
   );
-  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [isStreamReady, setIsStreamReady] = useState(false);
 
   return {
     sessionState,
     setSessionState,
-    stream,
-    setStream,
+    isStreamReady,
+    setIsStreamReady,
   };
 };
 
@@ -135,56 +139,47 @@ const useStreamingAvatarMessageState = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const currentSenderRef = useRef<MessageSender | null>(null);
 
-  const handleUserTalkingMessage = ({
-    detail,
-  }: {
-    detail: UserTalkingMessageEvent;
-  }) => {
-    if (currentSenderRef.current === MessageSender.CLIENT) {
-      setMessages((prev) => [
-        ...prev.slice(0, -1),
-        {
-          ...prev[prev.length - 1],
-          content: [prev[prev.length - 1].content, detail.message].join(""),
-        },
-      ]);
+  const appendChunkFor = (sender: MessageSender, text: string) => {
+    if (!text) return;
+    if (currentSenderRef.current === sender) {
+      setMessages((prev) => {
+        if (prev.length === 0) {
+          return [
+            {
+              id: Date.now().toString(),
+              sender,
+              content: text,
+            },
+          ];
+        }
+        const last = prev[prev.length - 1];
+        return [
+          ...prev.slice(0, -1),
+          {
+            ...last,
+            content: `${last.content}${text}`,
+          },
+        ];
+      });
     } else {
-      currentSenderRef.current = MessageSender.CLIENT;
+      currentSenderRef.current = sender;
       setMessages((prev) => [
         ...prev,
         {
           id: Date.now().toString(),
-          sender: MessageSender.CLIENT,
-          content: detail.message,
+          sender,
+          content: text,
         },
       ]);
     }
   };
 
-  const handleStreamingTalkingMessage = ({
-    detail,
-  }: {
-    detail: StreamingTalkingMessageEvent;
-  }) => {
-    if (currentSenderRef.current === MessageSender.AVATAR) {
-      setMessages((prev) => [
-        ...prev.slice(0, -1),
-        {
-          ...prev[prev.length - 1],
-          content: [prev[prev.length - 1].content, detail.message].join(""),
-        },
-      ]);
-    } else {
-      currentSenderRef.current = MessageSender.AVATAR;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now().toString(),
-          sender: MessageSender.AVATAR,
-          content: detail.message,
-        },
-      ]);
-    }
+  const handleUserTranscriptionChunk = (event: TranscriptionEvent) => {
+    appendChunkFor(MessageSender.CLIENT, event.text);
+  };
+
+  const handleAvatarTranscriptionChunk = (event: TranscriptionEvent) => {
+    appendChunkFor(MessageSender.AVATAR, event.text);
   };
 
   const handleEndMessage = () => {
@@ -197,8 +192,8 @@ const useStreamingAvatarMessageState = () => {
       setMessages([]);
       currentSenderRef.current = null;
     },
-    handleUserTalkingMessage,
-    handleStreamingTalkingMessage,
+    handleUserTranscriptionChunk,
+    handleAvatarTranscriptionChunk,
     handleEndMessage,
   };
 };
@@ -243,12 +238,12 @@ const useStreamingAvatarReadinessState = () => {
 
 export const StreamingAvatarProvider = ({
   children,
-  basePath,
+  apiUrl,
 }: {
   children: React.ReactNode;
-  basePath?: string;
+  apiUrl?: string;
 }) => {
-  const avatarRef = React.useRef<StreamingAvatar>(null);
+  const sessionRef = useRef<LiveAvatarSession | null>(null);
   const voiceChatState = useStreamingAvatarVoiceChatState();
   const sessionState = useStreamingAvatarSessionState();
   const messageState = useStreamingAvatarMessageState();
@@ -260,8 +255,8 @@ export const StreamingAvatarProvider = ({
   return (
     <StreamingAvatarContext.Provider
       value={{
-        avatarRef,
-        basePath,
+        sessionRef,
+        apiUrl,
         ...voiceChatState,
         ...sessionState,
         ...messageState,

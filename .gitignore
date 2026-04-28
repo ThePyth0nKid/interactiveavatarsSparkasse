@@ -36,3 +36,6 @@ NUL
 *.tsbuildinfo
 next-env.d.ts
 .idea
+
+# local tooling
+.claude/

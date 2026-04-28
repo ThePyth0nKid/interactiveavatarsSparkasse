@@ -1,66 +1,38 @@
-import { TaskMode, TaskType } from "@heygen/streaming-avatar";
 import { useCallback } from "react";
 
 import { useStreamingAvatarContext } from "./context";
 
 export const useTextChat = () => {
-  const { avatarRef } = useStreamingAvatarContext();
+  const { sessionRef } = useStreamingAvatarContext();
 
   const sendMessage = useCallback(
     (message: string) => {
-      if (!avatarRef.current) return;
-      avatarRef.current.speak({
-        text: message,
-        taskType: TaskType.TALK,
-        taskMode: TaskMode.ASYNC,
-      });
+      const session = sessionRef.current;
+      if (!session) return;
+      try {
+        session.message(message);
+      } catch (error) {
+        console.error("Failed to send message:", error);
+      }
     },
-    [avatarRef],
-  );
-
-  const sendMessageSync = useCallback(
-    async (message: string) => {
-      if (!avatarRef.current) return;
-
-      return await avatarRef.current?.speak({
-        text: message,
-        taskType: TaskType.TALK,
-        taskMode: TaskMode.SYNC,
-      });
-    },
-    [avatarRef],
+    [sessionRef],
   );
 
   const repeatMessage = useCallback(
     (message: string) => {
-      if (!avatarRef.current) return;
-
-      return avatarRef.current?.speak({
-        text: message,
-        taskType: TaskType.REPEAT,
-        taskMode: TaskMode.ASYNC,
-      });
+      const session = sessionRef.current;
+      if (!session) return;
+      try {
+        session.repeat(message);
+      } catch (error) {
+        console.error("Failed to repeat message:", error);
+      }
     },
-    [avatarRef],
-  );
-
-  const repeatMessageSync = useCallback(
-    async (message: string) => {
-      if (!avatarRef.current) return;
-
-      return await avatarRef.current?.speak({
-        text: message,
-        taskType: TaskType.REPEAT,
-        taskMode: TaskMode.SYNC,
-      });
-    },
-    [avatarRef],
+    [sessionRef],
   );
 
   return {
     sendMessage,
-    sendMessageSync,
     repeatMessage,
-    repeatMessageSync,
   };
 };

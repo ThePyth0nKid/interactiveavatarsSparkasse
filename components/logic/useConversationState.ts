@@ -3,26 +3,30 @@ import { useCallback } from "react";
 import { useStreamingAvatarContext } from "./context";
 
 export const useConversationState = () => {
-  const { avatarRef, isAvatarTalking, isUserTalking, isListening } =
+  const { sessionRef, isAvatarTalking, isUserTalking, isListening, setIsListening } =
     useStreamingAvatarContext();
 
   const startListening = useCallback(() => {
-    if (!avatarRef.current) {
-      console.log('[useConversationState] startListening - avatarRef not available');
-      return;
+    const session = sessionRef.current;
+    if (!session) return;
+    try {
+      session.startListening();
+      setIsListening(true);
+    } catch (error) {
+      console.error("Failed to start listening:", error);
     }
-    console.log('[useConversationState] startListening() called - SDK startListening()');
-    avatarRef.current.startListening();
-  }, [avatarRef]);
+  }, [sessionRef, setIsListening]);
 
   const stopListening = useCallback(() => {
-    if (!avatarRef.current) {
-      console.log('[useConversationState] stopListening - avatarRef not available');
-      return;
+    const session = sessionRef.current;
+    if (!session) return;
+    try {
+      session.stopListening();
+      setIsListening(false);
+    } catch (error) {
+      console.error("Failed to stop listening:", error);
     }
-    console.log('[useConversationState] stopListening() called - SDK stopListening()');
-    avatarRef.current.stopListening();
-  }, [avatarRef]);
+  }, [sessionRef, setIsListening]);
 
   return {
     isAvatarListening: isListening,

@@ -1,11 +1,14 @@
+import { VoiceChatEvent, VoiceChatState } from "@heygen/liveavatar-web-sdk";
 import { useCallback, useEffect } from "react";
 
-import { useStreamingAvatarContext } from "./context";
-import { StreamingAvatarSessionState } from "./context";
+import {
+  StreamingAvatarSessionState,
+  useStreamingAvatarContext,
+} from "./context";
 
 export const useVoiceChat = () => {
   const {
-    avatarRef,
+    sessionRef,
     isMuted,
     setIsMuted,
     isVoiceChatActive,
@@ -20,42 +23,44 @@ export const useVoiceChat = () => {
 
   const startVoiceChat = useCallback(
     async (isInputAudioMuted?: boolean) => {
-      if (!avatarRef.current) return;
+      const session = sessionRef.current;
+      if (!session) return;
+
       setIsVoiceChatLoading(true);
       setIsMicrophoneReady(false);
-      
+
+      // Probe permission BEFORE the SDK grabs the mic track.
+      // Chromium-based desktop browsers can revoke the SDK's track when a
+      // second concurrent getUserMedia() handle is closed, which manifests
+      // as "mic is hot but no audio reaches the backend".
+      let permissionGranted = true;
       try {
-        await avatarRef.current?.startVoiceChat({
-          isInputAudioMuted,
+        const permissionStatus = await navigator.permissions?.query?.({
+          name: "microphone" as PermissionName,
         });
-        
-        // Check microphone permissions and readiness
-        try {
-          // First check if we have permissions
-          const permissionStatus = await navigator.permissions?.query?.({ name: 'microphone' as PermissionName });
-          if (permissionStatus?.state === 'denied') {
-            console.warn("Microphone permission denied");
-            setIsMicrophoneReady(false);
-          } else {
-            // Try to access the microphone
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            // Test if we can actually access the microphone
-            if (stream && stream.getAudioTracks().length > 0) {
-              const audioTrack = stream.getAudioTracks()[0];
-              if (audioTrack.readyState === 'live') {
-                setIsMicrophoneReady(true);
-              }
-              // Clean up the test stream
-              stream.getTracks().forEach(track => track.stop());
-            } else {
-              setIsMicrophoneReady(false);
-            }
-          }
-        } catch (micError) {
-          console.warn("Microphone access failed:", micError);
-          setIsMicrophoneReady(false);
+        if (permissionStatus?.state === "denied") {
+          permissionGranted = false;
         }
-        
+      } catch {
+        // Permissions API unavailable — let the SDK trigger the prompt.
+      }
+
+      const handleMuted = () => setIsMuted(true);
+      const handleUnmuted = () => setIsMuted(false);
+      const handleStateChanged = (state: VoiceChatState) => {
+        setIsVoiceChatActive(state === VoiceChatState.ACTIVE);
+      };
+
+      session.voiceChat.on(VoiceChatEvent.MUTED, handleMuted);
+      session.voiceChat.on(VoiceChatEvent.UNMUTED, handleUnmuted);
+      session.voiceChat.on(VoiceChatEvent.STATE_CHANGED, handleStateChanged);
+
+      try {
+        await session.voiceChat.start({
+          defaultMuted: isInputAudioMuted ?? false,
+        });
+
+        setIsMicrophoneReady(permissionGranted);
         setIsVoiceChatActive(true);
         setIsMuted(!!isInputAudioMuted);
       } catch (error) {
@@ -65,48 +70,66 @@ export const useVoiceChat = () => {
         setIsVoiceChatLoading(false);
       }
     },
-    [avatarRef, setIsMuted, setIsVoiceChatActive, setIsVoiceChatLoading, setIsMicrophoneReady],
+    [
+      sessionRef,
+      setIsMuted,
+      setIsVoiceChatActive,
+      setIsVoiceChatLoading,
+      setIsMicrophoneReady,
+    ],
   );
 
   const stopVoiceChat = useCallback(async () => {
-    if (!avatarRef.current) return;
+    const session = sessionRef.current;
+    if (!session) return;
     try {
-      await avatarRef.current?.closeVoiceChat();
+      session.voiceChat.stop();
+      session.voiceChat.removeAllListeners();
     } finally {
       setIsVoiceChatActive(false);
       setIsMuted(true);
       setIsMicrophoneReady(false);
       setIsFullyReady(false);
     }
-  }, [avatarRef, setIsMuted, setIsVoiceChatActive, setIsMicrophoneReady, setIsFullyReady]);
+  }, [
+    sessionRef,
+    setIsMuted,
+    setIsVoiceChatActive,
+    setIsMicrophoneReady,
+    setIsFullyReady,
+  ]);
 
   const muteInputAudio = useCallback(() => {
-    if (!avatarRef.current) {
-      console.log('[useVoiceChat] muteInputAudio - avatarRef not available');
-      return;
-    }
-    console.log('[useVoiceChat] muteInputAudio() called - SDK muteInputAudio()');
-    avatarRef.current?.muteInputAudio();
+    const session = sessionRef.current;
+    if (!session) return;
+    void session.voiceChat.mute();
     setIsMuted(true);
-  }, [avatarRef, setIsMuted]);
+  }, [sessionRef, setIsMuted]);
 
   const unmuteInputAudio = useCallback(() => {
-    if (!avatarRef.current) {
-      console.log('[useVoiceChat] unmuteInputAudio - avatarRef not available');
-      return;
-    }
-    console.log('[useVoiceChat] unmuteInputAudio() called - SDK unmuteInputAudio()');
-    avatarRef.current?.unmuteInputAudio();
+    const session = sessionRef.current;
+    if (!session) return;
+    void session.voiceChat.unmute();
     setIsMuted(false);
-  }, [avatarRef, setIsMuted]);
+  }, [sessionRef, setIsMuted]);
 
-  // Effect to calculate full readiness based on avatar and microphone state
   useEffect(() => {
-    const isAvatarReady = sessionState === StreamingAvatarSessionState.CONNECTED;
-    const isFullyReady = isAvatarReady && isMicrophoneReady && isVoiceChatActive && !isVoiceChatLoading;
-    
+    const isAvatarReady =
+      sessionState === StreamingAvatarSessionState.CONNECTED;
+    const isFullyReady =
+      isAvatarReady &&
+      isMicrophoneReady &&
+      isVoiceChatActive &&
+      !isVoiceChatLoading;
+
     setIsFullyReady(isFullyReady);
-  }, [sessionState, isMicrophoneReady, isVoiceChatActive, isVoiceChatLoading, setIsFullyReady]);
+  }, [
+    sessionState,
+    isMicrophoneReady,
+    isVoiceChatActive,
+    isVoiceChatLoading,
+    setIsFullyReady,
+  ]);
 
   return {
     startVoiceChat,

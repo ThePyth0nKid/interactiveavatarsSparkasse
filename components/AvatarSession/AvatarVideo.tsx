@@ -1,5 +1,5 @@
 import React, { forwardRef } from "react";
-import { ConnectionQuality } from "@heygen/streaming-avatar";
+import { ConnectionQuality } from "@heygen/liveavatar-web-sdk";
 
 import { useConnectionQuality } from "../logic/useConnectionQuality";
 import { useStreamingAvatarSession } from "../logic/useStreamingAvatarSession";
@@ -16,13 +16,24 @@ type AvatarVideoProps = {
 
 export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
   ({ fit = "contain", objectPosition = "center" }, ref) => {
-  const { sessionState, stopAvatar } = useStreamingAvatarSession();
+  const { sessionState } = useStreamingAvatarSession();
   const { connectionQuality } = useConnectionQuality();
-  const { isFullyReady } = useStreamingAvatarContext();
+  const { isStreamReady } = useStreamingAvatarContext();
   const { isMicrophoneReady, isVoiceChatActive, isVoiceChatLoading } = useVoiceChat();
 
-  // Show loading until everything is truly ready
-  const isLoaded = isFullyReady;
+  // The avatar video is ready as soon as the session is connected and the
+  // remote stream is attached. Voice-chat readiness is a separate concern —
+  // gating the overlay on it would keep the spinner visible whenever voice
+  // is intentionally off (e.g. user switched to text mode).
+  const isVideoReady =
+    sessionState === StreamingAvatarSessionState.CONNECTED && isStreamReady;
+
+  // Surface a soft "voice is starting" hint only while voice chat is
+  // actively coming up — never as a hard blocker.
+  const showVoiceStartingHint =
+    isVideoReady && isVoiceChatLoading;
+  const showMicPermissionHint =
+    isVideoReady && isVoiceChatActive && !isMicrophoneReady;
 
   return (
     <>
@@ -31,7 +42,6 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
           {connectionQuality}
         </div>
       )}
-      {/* In-Video Close removed */}
       <video
         ref={ref}
         autoPlay
@@ -45,31 +55,28 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
       >
         <track kind="captions" />
       </video>
-      {!isLoaded && (
-        <LoadingOverlay 
+      {!isVideoReady && (
+        <LoadingOverlay
           message={
-            sessionState === StreamingAvatarSessionState.CONNECTING 
-              ? "Avatar wird geladen..." 
-              : sessionState === StreamingAvatarSessionState.CONNECTED && isVoiceChatLoading
-                ? "Mikrofon wird vorbereitet..."
-                : sessionState === StreamingAvatarSessionState.CONNECTED && !isMicrophoneReady && isVoiceChatActive
-                  ? "Mikrofon-Zugriff erforderlich"
-                  : sessionState === StreamingAvatarSessionState.CONNECTED && isMicrophoneReady && !isFullyReady
-                    ? "Berater wird vorbereitet..."
-                    : "Avatar wird geladen..."
+            sessionState === StreamingAvatarSessionState.CONNECTING
+              ? "Avatar wird geladen..."
+              : "Verbindung wird hergestellt..."
           }
           subMessage={
-            sessionState === StreamingAvatarSessionState.CONNECTING 
-              ? "Verbindung wird hergestellt…" 
-              : sessionState === StreamingAvatarSessionState.CONNECTED && isVoiceChatLoading
-                ? "Audio-Verbindung wird aufgebaut…"
-                : sessionState === StreamingAvatarSessionState.CONNECTED && !isMicrophoneReady && isVoiceChatActive
-                  ? "Bitte erlauben Sie den Mikrofon-Zugriff für die Sprachfunktion"
-                  : sessionState === StreamingAvatarSessionState.CONNECTED && isMicrophoneReady && !isFullyReady
-                    ? "Finalisierung läuft…"
-                    : "Verbindung wird hergestellt…"
+            sessionState === StreamingAvatarSessionState.CONNECTING
+              ? "Verbindung wird hergestellt…"
+              : "Stream wird vorbereitet…"
           }
         />
+      )}
+      {isVideoReady && (showVoiceStartingHint || showMicPermissionHint) && (
+        <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+          <div className="bg-black/70 text-white text-xs rounded-full px-3 py-1 shadow-lg border border-white/10">
+            {showMicPermissionHint
+              ? "Mikrofon-Zugriff erforderlich"
+              : "Mikrofon wird vorbereitet…"}
+          </div>
+        </div>
       )}
     </>
   );

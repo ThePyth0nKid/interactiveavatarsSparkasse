@@ -1,53 +1,54 @@
-export const AVATARS = [
+import { Language } from "@heygen/liveavatar-web-sdk";
+
+export type AvatarOption = {
+  avatar_id: string;
+  name: string;
+};
+
+// Fallback public avatar if the configured custom avatar fails to start.
+// Keep a single well-known entry; LiveAvatar avatar IDs are UUIDs.
+export const AVATARS: AvatarOption[] = [
   {
-    avatar_id: "Ann_Therapist_public",
-    name: "Ann Therapist",
-  },
-  {
-    avatar_id: "Shawn_Therapist_public",
-    name: "Shawn Therapist",
-  },
-  {
-    avatar_id: "Bryan_FitnessCoach_public",
-    name: "Bryan Fitness Coach",
-  },
-  {
-    avatar_id: "Dexter_Doctor_Standing2_public",
-    name: "Dexter Doctor Standing",
-  },
-  {
-    avatar_id: "Elenora_IT_Sitting_public",
-    name: "Elenora Tech Expert",
+    avatar_id:
+      process.env.NEXT_PUBLIC_LIVEAVATAR_AVATAR_ID ??
+      "e03ebc18-0ff9-4a4c-87e1-0df30aba5e70",
+    name: "Sparkasse Berater",
   },
 ];
 
-export const STT_LANGUAGE_LIST = [
-  { label: "Bulgarian", value: "bg", key: "bg" },
-  { label: "Chinese", value: "zh", key: "zh" },
-  { label: "Czech", value: "cs", key: "cs" },
-  { label: "Danish", value: "da", key: "da" },
-  { label: "Dutch", value: "nl", key: "nl" },
-  { label: "English", value: "en", key: "en" },
-  { label: "Finnish", value: "fi", key: "fi" },
-  { label: "French", value: "fr", key: "fr" },
-  { label: "German", value: "de", key: "de" },
-  { label: "Greek", value: "el", key: "el" },
-  { label: "Hindi", value: "hi", key: "hi" },
-  { label: "Hungarian", value: "hu", key: "hu" },
-  { label: "Indonesian", value: "id", key: "id" },
-  { label: "Italian", value: "it", key: "it" },
-  { label: "Japanese", value: "ja", key: "ja" },
-  { label: "Korean", value: "ko", key: "ko" },
-  { label: "Malay", value: "ms", key: "ms" },
-  { label: "Norwegian", value: "no", key: "no" },
-  { label: "Polish", value: "pl", key: "pl" },
-  { label: "Portuguese", value: "pt", key: "pt" },
-  { label: "Romanian", value: "ro", key: "ro" },
-  { label: "Russian", value: "ru", key: "ru" },
-  { label: "Slovak", value: "sk", key: "sk" },
-  { label: "Spanish", value: "es", key: "es" },
-  { label: "Swedish", value: "sv", key: "sv" },
-  { label: "Turkish", value: "tr", key: "tr" },
-  { label: "Ukrainian", value: "uk", key: "uk" },
-  { label: "Vietnamese", value: "vi", key: "vi" },
+export type LanguageOption = {
+  label: string;
+  value: Language;
+  key: string;
+};
+
+export const STT_LANGUAGE_LIST: LanguageOption[] = [
+  { label: "Bulgarian", value: Language.bg, key: "bg" },
+  { label: "Chinese", value: Language.zh, key: "zh" },
+  { label: "Czech", value: Language.cs, key: "cs" },
+  { label: "Danish", value: Language.da, key: "da" },
+  { label: "Dutch", value: Language.nl, key: "nl" },
+  { label: "English", value: Language.en, key: "en" },
+  { label: "Finnish", value: Language.fi, key: "fi" },
+  { label: "French", value: Language.fr, key: "fr" },
+  { label: "German", value: Language.de, key: "de" },
+  { label: "Greek", value: Language.el, key: "el" },
+  { label: "Hindi", value: Language.hi, key: "hi" },
+  { label: "Hungarian", value: Language.hu, key: "hu" },
+  { label: "Indonesian", value: Language.id, key: "id" },
+  { label: "Italian", value: Language.it, key: "it" },
+  { label: "Japanese", value: Language.ja, key: "ja" },
+  { label: "Korean", value: Language.ko, key: "ko" },
+  { label: "Malay", value: Language.ms, key: "ms" },
+  { label: "Norwegian", value: Language.no, key: "no" },
+  { label: "Polish", value: Language.pl, key: "pl" },
+  { label: "Portuguese", value: Language.pt, key: "pt" },
+  { label: "Romanian", value: Language.ro, key: "ro" },
+  { label: "Russian", value: Language.ru, key: "ru" },
+  { label: "Slovak", value: Language.sk, key: "sk" },
+  { label: "Spanish", value: Language.es, key: "es" },
+  { label: "Swedish", value: Language.sv, key: "sv" },
+  { label: "Turkish", value: Language.tr, key: "tr" },
+  { label: "Ukrainian", value: Language.uk, key: "uk" },
+  { label: "Vietnamese", value: Language.vi, key: "vi" },
 ];
