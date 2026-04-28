@@ -7,7 +7,7 @@ import { AvatarVideo } from "./AvatarSession/AvatarVideo";
 import { useStreamingAvatarSession } from "./logic/useStreamingAvatarSession";
 import { AvatarControls } from "./AvatarSession/AvatarControls";
 import { useVoiceChat } from "./logic/useVoiceChat";
-import { StreamingAvatarProvider, StreamingAvatarSessionState } from "./logic";
+import { StreamingAvatarProvider, StreamingAvatarSessionState, useStreamingAvatarContext } from "./logic";
 import { useConversationState } from "./logic/useConversationState";
 import { useConnectionQuality } from "./logic/useConnectionQuality";
 import { useInterrupt } from "./logic/useInterrupt";
@@ -19,12 +19,10 @@ import { useMediaQuery } from "./logic/useMediaQuery";
 import { MicOverlay } from "./AvatarSession/MicOverlay";
 import { TextOverlay } from "./AvatarSession/TextOverlay";
 
-const CUSTOM_AVATAR_ID =
-  process.env.NEXT_PUBLIC_CUSTOM_AVATAR_ID ?? AVATARS[0].avatar_id;
+const PREFERRED_AVATAR_ID = AVATARS[0].avatar_id;
 
-function getPreferredAvatarId(): string {
-  return CUSTOM_AVATAR_ID;
-}
+const OPENING_GREETING =
+  "Hallo, ich bin Alex, Ihr digitaler Berater der Sparkasse Pforzheim Calw. Wie kann ich Ihnen heute weiterhelfen?";
 
 type SessionConfig = {
   avatar_id: string;
@@ -32,7 +30,7 @@ type SessionConfig = {
 };
 
 const DEFAULT_CONFIG: SessionConfig = {
-  avatar_id: CUSTOM_AVATAR_ID,
+  avatar_id: PREFERRED_AVATAR_ID,
   language: "de",
 };
 
@@ -74,6 +72,8 @@ function InteractiveAvatar({
     useConversationState();
   const { connectionQuality } = useConnectionQuality();
   const { interrupt } = useInterrupt();
+  const { sessionRef } = useStreamingAvatarContext();
+  const greetedRef = useRef<boolean>(false);
 
   const [config] = useState<SessionConfig>(DEFAULT_CONFIG);
   const [showTextOverlay, setShowTextOverlay] = useState<boolean>(false);
@@ -127,7 +127,7 @@ function InteractiveAvatar({
   const startSessionV2 = useMemoizedFn(async (isVoiceChat: boolean) => {
     const configToUse: SessionConfig = {
       ...config,
-      avatar_id: getPreferredAvatarId(),
+      avatar_id: PREFERRED_AVATAR_ID,
     };
     try {
       const sessionToken = await fetchSessionToken(configToUse);
@@ -139,28 +139,6 @@ function InteractiveAvatar({
       }
     } catch (error) {
       console.error("Error starting avatar session:", error);
-
-      if (configToUse.avatar_id !== AVATARS[0].avatar_id) {
-        const fallbackConfig: SessionConfig = {
-          ...configToUse,
-          avatar_id: AVATARS[0].avatar_id,
-        };
-        try {
-          console.warn(
-            "Retrying with default avatar:",
-            fallbackConfig.avatar_id,
-          );
-          const fallbackToken = await fetchSessionToken(fallbackConfig);
-          initAvatar(fallbackToken, { voiceChat: false });
-          await startAvatar(fallbackToken, { voiceChat: false });
-          if (isVoiceChat) {
-            await startVoiceChat();
-          }
-          return;
-        } catch (fallbackError) {
-          console.error("Fallback start failed as well:", fallbackError);
-        }
-      }
     }
   });
 
@@ -246,7 +224,20 @@ function InteractiveAvatar({
         muted: video.muted,
       });
     });
-  }, [isStreamReady, attachMedia]);
+
+    // Trigger an opening greeting once — confirms the avatar audio pipeline
+    // works even if the user's mic is silent or text-mode is active.
+    if (!greetedRef.current && sessionRef.current) {
+      greetedRef.current = true;
+      const session = sessionRef.current;
+      try {
+        console.info("[avatar] sending opening greeting via repeat()");
+        session.repeat(OPENING_GREETING);
+      } catch (err) {
+        console.warn("[avatar] opening greeting failed", err);
+      }
+    }
+  }, [isStreamReady, attachMedia, sessionRef]);
 
   useEffect(() => {
     if (isAvatarTalking) {
@@ -273,6 +264,9 @@ function InteractiveAvatar({
     ) {
       startedOnMountRef.current = true;
       void startSessionV2(true);
+    }
+    if (sessionState === StreamingAvatarSessionState.INACTIVE) {
+      greetedRef.current = false;
     }
   }, [sessionState, startSessionV2]);
 
