@@ -1,4 +1,3 @@
-import { ConnectionQuality } from "@heygen/liveavatar-web-sdk";
 import { useEffect, useRef, useState } from "react";
 import { useMemoizedFn, useUnmount } from "ahooks";
 
@@ -7,9 +6,12 @@ import { AvatarVideo } from "./AvatarSession/AvatarVideo";
 import { useStreamingAvatarSession } from "./logic/useStreamingAvatarSession";
 import { AvatarControls } from "./AvatarSession/AvatarControls";
 import { useVoiceChat } from "./logic/useVoiceChat";
-import { StreamingAvatarProvider, StreamingAvatarSessionState, useStreamingAvatarContext } from "./logic";
+import {
+  StreamingAvatarProvider,
+  StreamingAvatarSessionState,
+  useStreamingAvatarContext,
+} from "./logic";
 import { useConversationState } from "./logic/useConversationState";
-import { useConnectionQuality } from "./logic/useConnectionQuality";
 import { useInterrupt } from "./logic/useInterrupt";
 import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
@@ -24,28 +26,55 @@ const PREFERRED_AVATAR_ID = AVATARS[0].avatar_id;
 const OPENING_GREETING =
   "Hallo, ich bin Alex, Ihr digitaler Berater der Sparkasse Pforzheim Calw. Wie kann ich Ihnen heute weiterhelfen?";
 
-type SessionConfig = {
+const PORTRAIT_OBJECT_POSITION = "30% center";
+
+interface SessionConfig {
   avatar_id: string;
   language: string;
-};
+}
 
 const DEFAULT_CONFIG: SessionConfig = {
   avatar_id: PREFERRED_AVATAR_ID,
   language: "de",
 };
 
-const PORTRAIT_OBJECT_POSITION = "30% center";
+interface TokenResponse {
+  session_id: string;
+  session_token: string;
+}
 
-type InteractiveAvatarProps = {
+interface InteractiveAvatarProps {
   fullscreen?: boolean;
   hideChat?: boolean;
   forcePortrait?: boolean;
-};
+}
 
-type TokenResponse = {
-  session_id: string;
-  session_token: string;
-};
+async function fetchSessionToken(
+  sessionConfig: SessionConfig,
+): Promise<string> {
+  const response = await fetch("/api/get-access-token", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      avatar_id: sessionConfig.avatar_id,
+      language: sessionConfig.language,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(
+      `Failed to obtain session token (${response.status}): ${errorText}`,
+    );
+  }
+
+  const data = (await response.json()) as TokenResponse;
+  if (!data.session_token) {
+    throw new Error("Session token missing in response");
+  }
+
+  return data.session_token;
+}
 
 function InteractiveAvatar({
   fullscreen = false,
@@ -70,71 +99,26 @@ function InteractiveAvatar({
   } = useVoiceChat();
   const { startListening, stopListening, isAvatarTalking } =
     useConversationState();
-  const { connectionQuality } = useConnectionQuality();
   const { interrupt } = useInterrupt();
   const { sessionRef } = useStreamingAvatarContext();
-  const greetedRef = useRef<boolean>(false);
 
-  const [config] = useState<SessionConfig>(DEFAULT_CONFIG);
   const [showTextOverlay, setShowTextOverlay] = useState<boolean>(false);
-
   const mediaStream = useRef<HTMLVideoElement>(null);
   const startedOnMountRef = useRef<boolean>(false);
+  const greetedRef = useRef<boolean>(false);
   const isMobile = useMediaQuery("(max-width: 639px)");
-  const reinitInProgressRef = useRef<boolean>(false);
-  const lastVoiceEventTsRef = useRef<number>(0);
 
-  async function waitFor(
-    predicate: () => boolean,
-    timeoutMs = 3000,
-    stepMs = 50,
-  ): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      if (predicate()) return true;
-      await new Promise((r) => setTimeout(r, stepMs));
-    }
-    return predicate();
-  }
-
-  async function fetchSessionToken(
-    sessionConfig: SessionConfig,
-  ): Promise<string> {
-    const response = await fetch("/api/get-access-token", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        avatar_id: sessionConfig.avatar_id,
-        language: sessionConfig.language,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(
-        `Failed to obtain session token (${response.status}): ${errorText}`,
-      );
-    }
-
-    const data = (await response.json()) as TokenResponse;
-    if (!data.session_token) {
-      throw new Error("Session token missing in response");
-    }
-
-    return data.session_token;
-  }
-
-  const startSessionV2 = useMemoizedFn(async (isVoiceChat: boolean) => {
-    const configToUse: SessionConfig = {
-      ...config,
-      avatar_id: PREFERRED_AVATAR_ID,
-    };
+  const startSession = useMemoizedFn(async (withVoiceChat: boolean) => {
     try {
-      const sessionToken = await fetchSessionToken(configToUse);
+      const sessionToken = await fetchSessionToken(DEFAULT_CONFIG);
+      // Voice chat is started explicitly after the session is connected so
+      // we control the order: stream-ready event fires before mic capture
+      // begins. This avoids races where the SDK publishes a mic track to a
+      // room that isn't fully wired up.
       initAvatar(sessionToken, { voiceChat: false });
       await startAvatar(sessionToken, { voiceChat: false });
 
-      if (isVoiceChat) {
+      if (withVoiceChat) {
         await startVoiceChat();
       }
     } catch (error) {
@@ -142,103 +126,45 @@ function InteractiveAvatar({
     }
   });
 
-  const ensureVoiceOperational = useMemoizedFn(async () => {
-    if (reinitInProgressRef.current) return;
-    reinitInProgressRef.current = true;
-    try {
-      await new Promise((r) => setTimeout(r, 700));
-      const noUserEventRecently =
-        Date.now() - lastVoiceEventTsRef.current > 2000;
-      const badConn =
-        connectionQuality === ConnectionQuality.BAD ||
-        connectionQuality === ConnectionQuality.UNKNOWN;
-      if (badConn || noUserEventRecently) {
-        await stopVoiceChat();
-        await new Promise((r) => setTimeout(r, 250));
-        await startVoiceChat(false);
-        unmuteInputAudio();
-        startListening();
-        await new Promise((r) => setTimeout(r, 700));
-        if (Date.now() - lastVoiceEventTsRef.current > 2000) {
-          if (
-            [
-              StreamingAvatarSessionState.CONNECTED,
-              StreamingAvatarSessionState.CONNECTING,
-            ].includes(sessionState)
-          ) {
-            await stopAvatar();
-            await waitFor(
-              () =>
-                [StreamingAvatarSessionState.INACTIVE].includes(sessionState),
-              4000,
-              50,
-            );
-          }
-          if (
-            [StreamingAvatarSessionState.INACTIVE].includes(sessionState)
-          ) {
-            await startSessionV2(true);
-          }
-        }
-      } else {
-        unmuteInputAudio();
-      }
-    } finally {
-      reinitInProgressRef.current = false;
-    }
-  });
-
-  const resumeVoiceFromOverlay = useMemoizedFn(async () => {
-    setShowTextOverlay(false);
-    try {
-      await new Promise((r) => setTimeout(r, 100));
-      await startVoiceChat(false);
-      unmuteInputAudio();
-      startListening();
-      void ensureVoiceOperational();
-    } catch (e) {
-      console.error("Resume voice from overlay failed:", e);
-    }
-  });
-
   useUnmount(() => {
     void stopAvatar();
   });
 
+  // Auto-start the session in voice mode on mount.
+  useEffect(() => {
+    if (
+      !startedOnMountRef.current &&
+      sessionState === StreamingAvatarSessionState.INACTIVE
+    ) {
+      startedOnMountRef.current = true;
+      void startSession(true);
+    }
+    if (sessionState === StreamingAvatarSessionState.INACTIVE) {
+      greetedRef.current = false;
+    }
+  }, [sessionState, startSession]);
+
+  // When the LiveKit stream is ready, attach SDK tracks to our video element
+  // and trigger an opening greeting once. The greeting confirms the avatar
+  // audio pipeline works end-to-end without depending on the user's mic.
   useEffect(() => {
     if (!isStreamReady || !mediaStream.current) return;
     const video = mediaStream.current;
     attachMedia(video);
-    const stream = video.srcObject as MediaStream | null;
-    console.info("[avatar] attachMedia complete", {
-      hasSrcObject: !!stream,
-      audioTracks: stream?.getAudioTracks().length ?? 0,
-      videoTracks: stream?.getVideoTracks().length ?? 0,
-      muted: video.muted,
-      volume: video.volume,
-    });
-    video.play().catch((err) => {
-      console.warn("[avatar] video.play() failed", {
-        name: err?.name,
-        message: err?.message,
-        muted: video.muted,
-      });
-    });
 
-    // Trigger an opening greeting once — confirms the avatar audio pipeline
-    // works even if the user's mic is silent or text-mode is active.
     if (!greetedRef.current && sessionRef.current) {
       greetedRef.current = true;
-      const session = sessionRef.current;
       try {
-        console.info("[avatar] sending opening greeting via repeat()");
-        session.repeat(OPENING_GREETING);
+        sessionRef.current.repeat(OPENING_GREETING);
       } catch (err) {
         console.warn("[avatar] opening greeting failed", err);
       }
     }
   }, [isStreamReady, attachMedia, sessionRef]);
 
+  // Switch listening on/off based on who is speaking. While the avatar talks,
+  // we mute the user's mic so it doesn't bleed back into the STT and trigger
+  // a self-interrupt.
   useEffect(() => {
     if (isAvatarTalking) {
       stopListening();
@@ -257,18 +183,27 @@ function InteractiveAvatar({
     unmuteInputAudio,
   ]);
 
-  useEffect(() => {
-    if (
-      !startedOnMountRef.current &&
-      sessionState === StreamingAvatarSessionState.INACTIVE
-    ) {
-      startedOnMountRef.current = true;
-      void startSessionV2(true);
+  const handleToggleTextMode = useMemoizedFn(async () => {
+    if (showTextOverlay) {
+      // Returning from text → voice
+      setShowTextOverlay(false);
+      try {
+        if (!isVoiceChatActive) {
+          await startVoiceChat(false);
+        }
+        unmuteInputAudio();
+        startListening();
+      } catch (e) {
+        console.error("Resume voice from overlay failed:", e);
+      }
+    } else {
+      // Switching voice → text
+      if (isVoiceChatActive) {
+        await stopVoiceChat();
+      }
+      setShowTextOverlay(true);
     }
-    if (sessionState === StreamingAvatarSessionState.INACTIVE) {
-      greetedRef.current = false;
-    }
-  }, [sessionState, startSessionV2]);
+  });
 
   return (
     <div
@@ -345,26 +280,7 @@ function InteractiveAvatar({
             <div className="flex-1 flex justify-end">
               <button
                 disabled={isVoiceChatLoading}
-                onClick={async () => {
-                  if (showTextOverlay) {
-                    setShowTextOverlay(false);
-                    try {
-                      await new Promise((r) => setTimeout(r, 100));
-                      await startVoiceChat(false);
-                      unmuteInputAudio();
-                      startListening();
-                      void ensureVoiceOperational();
-                    } catch (e) {
-                      console.error("Start voice chat failed:", e);
-                    }
-                  } else {
-                    if (isVoiceChatActive) {
-                      await stopVoiceChat();
-                      await new Promise((r) => setTimeout(r, 300));
-                    }
-                    setShowTextOverlay(true);
-                  }
-                }}
+                onClick={() => void handleToggleTextMode()}
                 className="h-10 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 px-4 text-sm font-medium hover:bg-white"
                 aria-pressed={showTextOverlay}
                 aria-label="Text-Chat umschalten"
@@ -374,7 +290,9 @@ function InteractiveAvatar({
             </div>
           </div>
 
-          {showTextOverlay && <TextOverlay onClose={resumeVoiceFromOverlay} />}
+          {showTextOverlay && (
+            <TextOverlay onClose={() => void handleToggleTextMode()} />
+          )}
           {fullscreen && (
             <div className="absolute top-3 right-3">
               <a
@@ -399,10 +317,10 @@ function InteractiveAvatar({
             <AvatarControls />
           ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
             <div className="flex flex-row gap-4">
-              <Button onClick={() => startSessionV2(true)}>
+              <Button onClick={() => startSession(true)}>
                 Start Voice Chat
               </Button>
-              <Button onClick={() => startSessionV2(false)}>
+              <Button onClick={() => startSession(false)}>
                 Start Text Chat
               </Button>
             </div>
