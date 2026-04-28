@@ -228,12 +228,24 @@ function InteractiveAvatar({
   });
 
   useEffect(() => {
-    if (isStreamReady && mediaStream.current) {
-      attachMedia(mediaStream.current);
-      mediaStream.current.play().catch((err) => {
-        console.warn("Video play() failed:", err);
+    if (!isStreamReady || !mediaStream.current) return;
+    const video = mediaStream.current;
+    attachMedia(video);
+    const stream = video.srcObject as MediaStream | null;
+    console.info("[avatar] attachMedia complete", {
+      hasSrcObject: !!stream,
+      audioTracks: stream?.getAudioTracks().length ?? 0,
+      videoTracks: stream?.getVideoTracks().length ?? 0,
+      muted: video.muted,
+      volume: video.volume,
+    });
+    video.play().catch((err) => {
+      console.warn("[avatar] video.play() failed", {
+        name: err?.name,
+        message: err?.message,
+        muted: video.muted,
       });
-    }
+    });
   }, [isStreamReady, attachMedia]);
 
   useEffect(() => {

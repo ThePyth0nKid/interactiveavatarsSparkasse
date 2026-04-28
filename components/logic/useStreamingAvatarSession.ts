@@ -8,6 +8,7 @@ import { useCallback } from "react";
 
 import {
   StreamingAvatarSessionState,
+  type TranscriptionEvent,
   useStreamingAvatarContext,
 } from "./context";
 import { useVoiceChat } from "./useVoiceChat";
@@ -99,6 +100,7 @@ export const useStreamingAvatarSession = () => {
       setSessionState(StreamingAvatarSessionState.CONNECTING);
 
       session.on(SessionEvent.SESSION_STREAM_READY, () => {
+        console.info("[avatar] SESSION_STREAM_READY", { ts: Date.now() });
         setIsStreamReady(true);
         setSessionState(StreamingAvatarSessionState.CONNECTED);
       });
@@ -110,7 +112,8 @@ export const useStreamingAvatarSession = () => {
         },
       );
 
-      session.on(SessionEvent.SESSION_DISCONNECTED, () => {
+      session.on(SessionEvent.SESSION_DISCONNECTED, (reason?: unknown) => {
+        console.warn("[avatar] SESSION_DISCONNECTED", { reason });
         void stop();
       });
 
@@ -123,21 +126,33 @@ export const useStreamingAvatarSession = () => {
       });
 
       session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => {
+        console.info("[avatar] AVATAR_SPEAK_STARTED");
         setIsAvatarTalking(true);
       });
 
       session.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => {
+        console.info("[avatar] AVATAR_SPEAK_ENDED");
         setIsAvatarTalking(false);
         handleEndMessage();
       });
 
       session.on(
         AgentEventsEnum.USER_TRANSCRIPTION_CHUNK,
-        handleUserTranscriptionChunk,
+        (chunk: TranscriptionEvent) => {
+          console.info("[avatar] USER_TRANSCRIPTION_CHUNK", {
+            length: chunk?.text?.length ?? 0,
+          });
+          handleUserTranscriptionChunk(chunk);
+        },
       );
       session.on(
         AgentEventsEnum.AVATAR_TRANSCRIPTION_CHUNK,
-        handleAvatarTranscriptionChunk,
+        (chunk: TranscriptionEvent) => {
+          console.info("[avatar] AVATAR_TRANSCRIPTION_CHUNK", {
+            length: chunk?.text?.length ?? 0,
+          });
+          handleAvatarTranscriptionChunk(chunk);
+        },
       );
 
       await session.start();
