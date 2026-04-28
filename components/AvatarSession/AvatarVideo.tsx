@@ -1,4 +1,11 @@
-import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+} from "react";
 import { ConnectionQuality } from "@heygen/liveavatar-web-sdk";
 
 import { useConnectionQuality } from "../logic/useConnectionQuality";
@@ -12,19 +19,31 @@ type AvatarVideoProps = {
   objectPosition?: string;
 };
 
+// LiveKit's track.attach() routes audio + video into one MediaStream on the
+// <video> element. Two complications on Chromium desktop:
+//  1) <video muted> is required for autoplay before the user has gestured.
+//     If we mute the video, we also mute the audio that lives inside it.
+//  2) React's controlled `muted` prop fights LiveKit's attachToElement(),
+//     which sets `element.muted = audioTracks.length === 0`. The result is
+//     a flicker that often leaves the element silently muted.
+// Fix: render a dedicated <audio> element, mirror only the audio tracks
+// onto it, and keep the <video> element permanently muted. The audio
+// element starts muted (so autoplay never blocks) and we unmute it
+// imperatively on the first user gesture.
 export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
   ({ fit = "contain", objectPosition = "center" }, ref) => {
     const { sessionState } = useStreamingAvatarSession();
     const { connectionQuality } = useConnectionQuality();
     const { isStreamReady } = useStreamingAvatarContext();
-    const { isMicrophoneReady, isVoiceChatActive, isVoiceChatLoading } = useVoiceChat();
+    const { isMicrophoneReady, isVoiceChatActive, isVoiceChatLoading } =
+      useVoiceChat();
 
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
+    const localAudioRef = useRef<HTMLAudioElement | null>(null);
     useImperativeHandle(ref, () => localVideoRef.current as HTMLVideoElement);
 
-    // Start muted so Chromium/Edge autoplay policy never blocks playback.
-    // Unmute on first user gesture (click on the video area or on the badge).
     const [isAudioMuted, setIsAudioMuted] = useState<boolean>(true);
+    const [isAudioRouted, setIsAudioRouted] = useState<boolean>(false);
 
     const isVideoReady =
       sessionState === StreamingAvatarSessionState.CONNECTED && isStreamReady;
@@ -33,51 +52,75 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     const showMicPermissionHint =
       isVideoReady && isVoiceChatActive && !isMicrophoneReady;
 
-    const unmuteAudio = useCallback(() => {
+    const routeAudio = useCallback(() => {
       const video = localVideoRef.current;
-      if (!video) return;
-      video.muted = false;
-      void video.play().catch((err) => {
-        console.warn("[avatar] unmute play() failed:", err);
+      const audio = localAudioRef.current;
+      if (!video || !audio) return false;
+      const stream = video.srcObject as MediaStream | null;
+      if (!stream) return false;
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) return false;
+
+      const audioStream = new MediaStream(audioTracks);
+      audio.srcObject = audioStream;
+      audio.muted = true;
+      audio.play().catch((err) => {
+        console.warn("[avatar] <audio> play() failed", {
+          name: err?.name,
+          message: err?.message,
+        });
       });
-      setIsAudioMuted(false);
+      console.info("[avatar] audio routed to dedicated <audio>", {
+        audioTracks: audioTracks.length,
+        trackEnabled: audioTracks.map((t) => t.enabled),
+        trackMuted: audioTracks.map((t) => t.muted),
+        trackReadyState: audioTracks.map((t) => t.readyState),
+      });
+      return true;
     }, []);
 
-    // Diagnostic: log audio track presence and playback state once the
-    // remote stream is attached. This helps distinguish autoplay-block
-    // from missing-track on the server side.
+    // Try to route audio whenever the video starts playing, since LiveKit
+    // sets srcObject inside attachToElement(). Retry on `playing` and
+    // `loadedmetadata` to handle race conditions between parent/child
+    // useEffect ordering.
     useEffect(() => {
       const video = localVideoRef.current;
       if (!isVideoReady || !video) return;
 
-      const stream = video.srcObject as MediaStream | null;
-      const audioTracks = stream?.getAudioTracks() ?? [];
-      const videoTracks = stream?.getVideoTracks() ?? [];
-      console.info("[avatar] stream attached", {
-        muted: video.muted,
-        volume: video.volume,
-        paused: video.paused,
-        audioTracks: audioTracks.length,
-        videoTracks: videoTracks.length,
-        audioEnabled: audioTracks.map((t) => t.enabled),
-      });
+      if (routeAudio()) {
+        setIsAudioRouted(true);
+      }
 
-      const onPlay = () => console.info("[avatar] <video> play");
-      const onPause = () => console.info("[avatar] <video> pause");
-      const onVolumeChange = () =>
-        console.info("[avatar] <video> volumechange", {
-          muted: video.muted,
-          volume: video.volume,
-        });
-      video.addEventListener("play", onPlay);
-      video.addEventListener("pause", onPause);
-      video.addEventListener("volumechange", onVolumeChange);
-      return () => {
-        video.removeEventListener("play", onPlay);
-        video.removeEventListener("pause", onPause);
-        video.removeEventListener("volumechange", onVolumeChange);
+      const tryRoute = () => {
+        if (routeAudio()) setIsAudioRouted(true);
       };
-    }, [isVideoReady]);
+      video.addEventListener("loadedmetadata", tryRoute);
+      video.addEventListener("playing", tryRoute);
+      video.addEventListener("play", tryRoute);
+
+      return () => {
+        video.removeEventListener("loadedmetadata", tryRoute);
+        video.removeEventListener("playing", tryRoute);
+        video.removeEventListener("play", tryRoute);
+      };
+    }, [isVideoReady, routeAudio]);
+
+    const unmuteAudio = useCallback(() => {
+      const audio = localAudioRef.current;
+      if (!audio) return;
+      // Best-effort re-route in case the user clicked before the audio
+      // tracks were attached.
+      if (!audio.srcObject) routeAudio();
+      audio.muted = false;
+      audio.play().catch((err) => {
+        console.warn("[avatar] <audio> unmute play() failed", {
+          name: err?.name,
+          message: err?.message,
+        });
+      });
+      setIsAudioMuted(false);
+      console.info("[avatar] user unmuted audio");
+    }, [routeAudio]);
 
     return (
       <>
@@ -90,7 +133,7 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
           ref={localVideoRef}
           autoPlay
           playsInline
-          muted={isAudioMuted}
+          muted
           onClick={isAudioMuted ? unmuteAudio : undefined}
           style={{
             width: "100%",
@@ -102,6 +145,7 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         >
           <track kind="captions" />
         </video>
+        <audio ref={localAudioRef} autoPlay playsInline />
         {!isVideoReady && (
           <LoadingOverlay
             message={
@@ -121,11 +165,11 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
             type="button"
             onClick={unmuteAudio}
             aria-label="Ton aktivieren"
-            className="absolute top-3 right-3 z-10 bg-black/75 hover:bg-black/85 text-white text-xs rounded-full px-3 py-1.5 shadow-lg border border-white/15 flex items-center gap-1.5 backdrop-blur-sm"
+            className="absolute top-3 right-3 z-10 bg-black/85 hover:bg-black text-white text-sm rounded-full px-4 py-2 shadow-lg border border-white/20 flex items-center gap-2 backdrop-blur-sm font-medium animate-pulse"
           >
             <svg
-              width="14"
-              height="14"
+              width="16"
+              height="16"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -141,8 +185,15 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
             <span>Ton aktivieren</span>
           </button>
         )}
+        {isVideoReady && isAudioRouted === false && !isAudioMuted && (
+          <div className="absolute top-3 right-3 z-10 pointer-events-none">
+            <div className="bg-black/70 text-white text-xs rounded-full px-3 py-1 shadow-lg border border-white/10">
+              Audio wird vorbereitet…
+            </div>
+          </div>
+        )}
         {isVideoReady && (showVoiceStartingHint || showMicPermissionHint) && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
             <div className="bg-black/70 text-white text-xs rounded-full px-3 py-1 shadow-lg border border-white/10">
               {showMicPermissionHint
                 ? "Mikrofon-Zugriff erforderlich"
