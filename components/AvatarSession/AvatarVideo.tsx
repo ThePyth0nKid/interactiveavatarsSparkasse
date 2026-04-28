@@ -19,16 +19,27 @@ interface AvatarVideoProps {
   objectPosition?: string;
 }
 
-// Single <video> element. The SDK's `session.attach(video)` calls
-// `videoTrack.attach()` and `audioTrack.attach()` synchronously on the same
-// element. LiveKit merges both tracks into srcObject and sets
-// `element.muted = false` (because audio is present). We never set a React
-// `muted` prop — that fights LiveKit's imperative mutation.
+// Strategy: NEVER trust autoplay-with-sound on desktop Chromium. Even when
+// `play()` resolves and `video.muted=false`, the browser can silently route
+// audio to a null sink if the page lacks user activation (low MEI score in
+// incognito, no prior interaction). We therefore always start muted, always
+// require a user gesture to unmute, and on the unmute gesture we additionally:
+//   - resume any suspended AudioContext (Web Audio API path)
+//   - call setSinkId('default') to route around Windows "Communications
+//     Device" mis-routing (the most common no-audio-on-desktop bug)
+//   - start a Web Audio analyser on the audio track to confirm data flow
 //
-// Playback strategy: we only call play() once srcObject contains an audio
-// track (i.e. attach has run). First we try unmuted; if Chromium's autoplay
-// policy blocks, we fall back to muted autoplay and surface a "Ton
-// aktivieren" button that calls play() inside a real user gesture.
+// If audioLevel never goes above silence after unmute, we know the server
+// is not actually sending audio bytes (vs. a routing issue) and surface
+// that to the user.
+type WindowWithWebkitAudio = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
+type VideoWithSinkId = HTMLVideoElement & {
+  setSinkId?: (sinkId: string) => Promise<void>;
+};
+
 export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
   ({ fit = "contain", objectPosition = "center" }, ref) => {
     const { sessionState } = useStreamingAvatarSession();
@@ -40,8 +51,11 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
     useImperativeHandle(ref, () => localVideoRef.current as HTMLVideoElement);
 
-    const [needsUnmute, setNeedsUnmute] = useState<boolean>(false);
-    const playingUnmutedRef = useRef<boolean>(false);
+    const [needsUnmute, setNeedsUnmute] = useState<boolean>(true);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const analyserRef = useRef<AnalyserNode | null>(null);
+    const audioLevelTimerRef = useRef<number | null>(null);
+    const startedMutedRef = useRef<boolean>(false);
 
     const isVideoReady =
       sessionState === StreamingAvatarSessionState.CONNECTED && isStreamReady;
@@ -50,110 +64,174 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     const showMicPermissionHint =
       isVideoReady && isVoiceChatActive && !isMicrophoneReady;
 
-    const tryPlay = useCallback(async () => {
-      const video = localVideoRef.current;
-      if (!video) return;
-      const stream = video.srcObject as MediaStream | null;
-      const audioTracks = stream?.getAudioTracks() ?? [];
-      if (!stream || audioTracks.length === 0) {
-        // attach() has not run yet, or audio track missing. Skip — we'll
-        // retry on loadedmetadata / canplay.
+    const stopAudioMonitor = useCallback(() => {
+      if (audioLevelTimerRef.current !== null) {
+        window.clearInterval(audioLevelTimerRef.current);
+        audioLevelTimerRef.current = null;
+      }
+      analyserRef.current?.disconnect();
+      analyserRef.current = null;
+    }, []);
+
+    const startAudioMonitor = useCallback((stream: MediaStream) => {
+      const audioTrack = stream.getAudioTracks()[0];
+      if (!audioTrack) {
+        console.warn("[avatar] audio monitor: no audio track on stream");
         return;
       }
-
-      if (playingUnmutedRef.current && !video.paused && !video.muted) {
-        return;
-      }
-
-      video.muted = false;
-      video.volume = 1;
-
       try {
-        await video.play();
-        playingUnmutedRef.current = !video.muted;
-        console.info("[avatar] play() ok", {
-          muted: String(video.muted),
-          volume: String(video.volume),
-          paused: String(video.paused),
-          audioTrackId: audioTracks[0]?.id,
-          audioTrackMuted: String(audioTracks[0]?.muted),
-          audioTrackEnabled: String(audioTracks[0]?.enabled),
-          audioTrackReadyState: audioTracks[0]?.readyState,
-        });
-        setNeedsUnmute(false);
-      } catch (err) {
-        console.warn("[avatar] unmuted play() blocked", {
-          name: (err as Error)?.name,
-          message: (err as Error)?.message,
-        });
-        // Fall back to muted autoplay so video is visible, and prompt for
-        // the user gesture needed to unmute.
-        video.muted = true;
-        try {
-          await video.play();
-        } catch (err2) {
-          console.error("[avatar] muted play() also failed", err2);
+        if (!audioContextRef.current) {
+          const Ctor =
+            window.AudioContext ||
+            (window as unknown as WindowWithWebkitAudio).webkitAudioContext;
+          if (!Ctor) {
+            console.warn("[avatar] AudioContext not supported");
+            return;
+          }
+          audioContextRef.current = new Ctor();
         }
-        playingUnmutedRef.current = false;
-        setNeedsUnmute(true);
+        const ctx = audioContextRef.current;
+        if (ctx.state === "suspended") {
+          void ctx.resume();
+        }
+        const source = ctx.createMediaStreamSource(
+          new MediaStream([audioTrack]),
+        );
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        source.connect(analyser);
+        analyserRef.current = analyser;
+
+        const buf = new Uint8Array(analyser.fftSize);
+        let consecutiveSilent = 0;
+        let everHeard = false;
+        audioLevelTimerRef.current = window.setInterval(() => {
+          if (!analyserRef.current) return;
+          analyserRef.current.getByteTimeDomainData(buf);
+          let max = 0;
+          let min = 255;
+          for (let i = 0; i < buf.length; i += 1) {
+            const v = buf[i];
+            if (v > max) max = v;
+            if (v < min) min = v;
+          }
+          const range = max - min;
+          if (range > 6) {
+            consecutiveSilent = 0;
+            if (!everHeard) {
+              everHeard = true;
+              console.info("[avatar] audio data CONFIRMED flowing", { range });
+            }
+          } else {
+            consecutiveSilent += 1;
+            if (consecutiveSilent === 8) {
+              console.warn(
+                "[avatar] audio track silent for ~8s — server likely not sending audio data",
+              );
+            }
+          }
+        }, 1000);
+        console.info("[avatar] audio monitor started", {
+          ctxState: ctx.state,
+          sampleRate: ctx.sampleRate,
+          trackId: audioTrack.id,
+          trackMuted: String(audioTrack.muted),
+          trackEnabled: String(audioTrack.enabled),
+        });
+      } catch (err) {
+        console.warn("[avatar] audio monitor setup failed", err);
       }
     }, []);
 
+    // When stream is ready: start MUTED autoplay (always allowed). Show the
+    // unmute button. We do NOT try unmuted play here — it's unreliable on
+    // desktop Chromium without a user gesture.
     useEffect(() => {
       const video = localVideoRef.current;
       if (!isVideoReady || !video) return;
+      if (startedMutedRef.current) return;
 
-      // Attempt immediately in case attach already ran.
-      void tryPlay();
-
-      const onLoadedMetadata = () => {
+      const tryMutedPlay = async () => {
         const stream = video.srcObject as MediaStream | null;
-        console.info("[avatar] loadedmetadata", {
-          videoTracks: stream?.getVideoTracks().length ?? 0,
-          audioTracks: stream?.getAudioTracks().length ?? 0,
-        });
-        void tryPlay();
-      };
-      const onCanPlay = () => void tryPlay();
-      const onPlaying = () => {
-        const stream = video.srcObject as MediaStream | null;
-        const audioTrack = stream?.getAudioTracks()[0];
-        console.info("[avatar] playing event", {
-          muted: String(video.muted),
-          volume: String(video.volume),
-          audioTrackMuted: String(audioTrack?.muted),
-        });
+        if (!stream || stream.getVideoTracks().length === 0) return;
+        startedMutedRef.current = true;
+        video.muted = true;
+        video.volume = 1;
+        try {
+          await video.play();
+          console.info("[avatar] muted autoplay ok", {
+            videoTracks: stream.getVideoTracks().length,
+            audioTracks: stream.getAudioTracks().length,
+          });
+        } catch (err) {
+          console.warn("[avatar] muted autoplay failed", err);
+        }
       };
 
+      void tryMutedPlay();
+
+      const onLoadedMetadata = () => void tryMutedPlay();
       video.addEventListener("loadedmetadata", onLoadedMetadata);
-      video.addEventListener("canplay", onCanPlay);
-      video.addEventListener("playing", onPlaying);
-
       return () => {
         video.removeEventListener("loadedmetadata", onLoadedMetadata);
-        video.removeEventListener("canplay", onCanPlay);
-        video.removeEventListener("playing", onPlaying);
       };
-    }, [isVideoReady, tryPlay]);
+    }, [isVideoReady]);
 
-    const handleUnmute = useCallback(() => {
+    const handleUnmute = useCallback(async () => {
       const video = localVideoRef.current;
       if (!video) return;
-      // We are inside a user gesture handler — unmuted play() will be
-      // permitted regardless of autoplay policy / MEI score.
-      video.muted = false;
-      video.volume = 1;
-      video
-        .play()
-        .then(() => {
-          playingUnmutedRef.current = true;
-          console.info("[avatar] user-gesture unmute play() ok");
-          setNeedsUnmute(false);
-        })
-        .catch((err) => {
-          console.error("[avatar] user-gesture unmute play() failed", err);
+
+      console.info("[avatar] handleUnmute: user gesture received");
+
+      try {
+        video.muted = false;
+        video.volume = 1;
+        await video.play();
+
+        // Force audio output device to system default. Mitigates Windows
+        // Chrome routing audio to a stale/disconnected "Communications" sink.
+        const videoWithSink = video as VideoWithSinkId;
+        if (typeof videoWithSink.setSinkId === "function") {
+          try {
+            await videoWithSink.setSinkId("");
+            console.info("[avatar] setSinkId('') ok — using system default");
+          } catch (err) {
+            console.warn("[avatar] setSinkId failed", err);
+          }
+        }
+
+        // Resume / create AudioContext (some browsers create it suspended
+        // until user gesture).
+        if (audioContextRef.current?.state === "suspended") {
+          await audioContextRef.current.resume();
+          console.info("[avatar] AudioContext resumed");
+        }
+
+        // Start data-flow monitor so we can distinguish "server silent" from
+        // "client routing broken".
+        const stream = video.srcObject as MediaStream | null;
+        if (stream) startAudioMonitor(stream);
+
+        console.info("[avatar] post-unmute state", {
+          muted: String(video.muted),
+          volume: String(video.volume),
+          paused: String(video.paused),
         });
-    }, []);
+        setNeedsUnmute(false);
+      } catch (err) {
+        console.error("[avatar] handleUnmute failed", err);
+      }
+    }, [startAudioMonitor]);
+
+    useEffect(() => {
+      return () => {
+        stopAudioMonitor();
+        if (audioContextRef.current && audioContextRef.current.state !== "closed") {
+          void audioContextRef.current.close();
+        }
+        audioContextRef.current = null;
+      };
+    }, [stopAudioMonitor]);
 
     return (
       <>
@@ -191,29 +269,37 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
           />
         )}
         {isVideoReady && needsUnmute && (
-          <button
-            type="button"
+          <div
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/40 cursor-pointer"
             onClick={handleUnmute}
+            role="button"
+            tabIndex={0}
             aria-label="Ton aktivieren"
-            className="absolute top-3 right-3 z-10 bg-black/85 hover:bg-black text-white text-sm rounded-full px-4 py-2 shadow-lg border border-white/20 flex items-center gap-2 backdrop-blur-sm font-medium animate-pulse"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                void handleUnmute();
+              }
+            }}
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M11 5L6 9H2v6h4l5 4V5z" />
-              <line x1="23" y1="9" x2="17" y2="15" />
-              <line x1="17" y1="9" x2="23" y2="15" />
-            </svg>
-            <span>Ton aktivieren</span>
-          </button>
+            <div className="bg-white/95 hover:bg-white text-zinc-900 text-base rounded-full px-6 py-3 shadow-2xl border border-black/10 flex items-center gap-3 font-medium">
+              <svg
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M11 5L6 9H2v6h4l5 4V5z" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+              </svg>
+              <span>Klicken, um zu starten</span>
+            </div>
+          </div>
         )}
         {isVideoReady && (showVoiceStartingHint || showMicPermissionHint) && (
           <div className="absolute top-12 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
