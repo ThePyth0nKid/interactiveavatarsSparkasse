@@ -47,6 +47,8 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     const startedMutedRef = useRef<boolean>(false);
     const routedTrackIdRef = useRef<string | null>(null);
     const audioReadyFiredRef = useRef<boolean>(false);
+    const meterTimerRef = useRef<number | null>(null);
+    const stateLogTimerRef = useRef<number | null>(null);
 
     const isVideoReady =
       sessionState === StreamingAvatarSessionState.CONNECTED && isStreamReady;
@@ -175,6 +177,63 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         console.error("[avatar] <audio> play() failed", err);
       }
 
+      // Diagnostic: log audio element state every 2s to see if currentTime
+      // advances (real playback) and if muted/paused stay correct.
+      if (stateLogTimerRef.current === null) {
+        stateLogTimerRef.current = window.setInterval(() => {
+          const a = audioElRef.current;
+          if (!a) return;
+          console.info("[avatar] <audio> state", {
+            currentTime: a.currentTime.toFixed(2),
+            paused: String(a.paused),
+            muted: String(a.muted),
+            volume: a.volume,
+            readyState: a.readyState,
+            playedRanges: a.played.length,
+          });
+        }, 2000);
+      }
+
+      // Diagnostic: tap the audio track with an AnalyserNode to verify real
+      // sample energy reaches the browser. If RMS > 0 while user reports
+      // silence, the issue is OS-level output. If RMS == 0, the track is
+      // actually silent.
+      if (meterTimerRef.current === null) {
+        try {
+          const stream = audioEl.srcObject as MediaStream | null;
+          if (stream && stream.getAudioTracks().length > 0) {
+            const Ctor =
+              window.AudioContext ||
+              (window as unknown as { webkitAudioContext?: typeof AudioContext })
+                .webkitAudioContext;
+            if (Ctor) {
+              const ctx = new Ctor();
+              await ctx.resume();
+              const src = ctx.createMediaStreamSource(stream);
+              const analyser = ctx.createAnalyser();
+              analyser.fftSize = 1024;
+              src.connect(analyser);
+              const buf = new Uint8Array(analyser.fftSize);
+              meterTimerRef.current = window.setInterval(() => {
+                analyser.getByteTimeDomainData(buf);
+                let min = 255;
+                let max = 0;
+                for (let i = 0; i < buf.length; i += 1) {
+                  if (buf[i] < min) min = buf[i];
+                  if (buf[i] > max) max = buf[i];
+                }
+                const range = max - min;
+                if (range > 5) {
+                  console.info("[avatar] AUDIO ENERGY DETECTED", { range });
+                }
+              }, 500);
+            }
+          }
+        } catch (err) {
+          console.warn("[avatar] analyser setup failed", err);
+        }
+      }
+
       setNeedsUnmute(false);
 
       if (!audioReadyFiredRef.current) {
@@ -182,6 +241,19 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         onAudioReady?.();
       }
     }, [attachAudioToElement, onAudioReady]);
+
+    useEffect(() => {
+      return () => {
+        if (meterTimerRef.current !== null) {
+          window.clearInterval(meterTimerRef.current);
+          meterTimerRef.current = null;
+        }
+        if (stateLogTimerRef.current !== null) {
+          window.clearInterval(stateLogTimerRef.current);
+          stateLogTimerRef.current = null;
+        }
+      };
+    }, []);
 
     return (
       <>
