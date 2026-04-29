@@ -57,6 +57,7 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     const audioReadyFiredRef = useRef<boolean>(false);
     const meterTimerRef = useRef<number | null>(null);
     const stateLogTimerRef = useRef<number | null>(null);
+    const autoUnmuteAttemptedRef = useRef<boolean>(false);
 
     const isVideoReady =
       sessionState === StreamingAvatarSessionState.CONNECTED && isStreamReady;
@@ -90,6 +91,17 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
           trackMuted: String(track.muted),
           trackEnabled: String(track.enabled),
           trackReadyState: track.readyState,
+          audioMuted: String(audioEl.muted),
+        });
+        // Browsers do not reliably autoplay when srcObject changes from
+        // null to a MediaStream after mount — explicitly call play() so
+        // playback starts as soon as the track lands. If the audio
+        // element is unmuted (handleUnmute already ran) and the user has
+        // gestured on this document, this resumes audio output. If
+        // muted (gesture not yet captured), play() succeeds silently
+        // and a subsequent muted=false flip carries the audio through.
+        void audioEl.play().catch((err: unknown) => {
+          console.warn("[avatar] audioEl.play() after attach failed", err);
         });
         return true;
       } catch (err) {
@@ -151,38 +163,58 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
       const audioEl = audioElRef.current;
       if (!video || !audioEl) return;
 
-      // Make sure audio track is attached.
-      attachAudioToElement();
+      // Try to attach the audio track now. If srcObject isn't ready yet
+      // (race with parent's attachMedia), the existing loadedmetadata
+      // listener will call attachAudioToElement again once it lands.
+      const attached = attachAudioToElement();
 
-      // <video> stays muted forever — picture only.
+      // CRITICAL: Fire play() SYNCHRONOUSLY (no awaits before) so
+      // Chromium's "sticky activation" from the user gesture is still
+      // valid. On origins with low MEI (any new visitor on Vercel),
+      // any await before play() revokes the gesture and play()
+      // returns NotAllowedError. Localhost has MEI≈100 so the issue
+      // is hidden in dev — production-only bug.
       video.muted = true;
-      try {
-        await video.play();
-      } catch {
-        /* ignore */
-      }
-
-      // <audio> carries the speech.
       audioEl.muted = false;
       audioEl.volume = 1.0;
+
+      const audioPlayPromise = audioEl.play();
+      const videoPlayPromise = video.play();
+
+      // setSinkId is non-essential and would consume gesture if awaited
+      // before play(). Fire and forget.
       try {
-        if (typeof (audioEl as HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }).setSinkId === "function") {
-          await (audioEl as HTMLAudioElement & { setSinkId: (id: string) => Promise<void> }).setSinkId("");
+        const setSinkIdFn = (
+          audioEl as HTMLAudioElement & {
+            setSinkId?: (id: string) => Promise<void>;
+          }
+        ).setSinkId;
+        if (typeof setSinkIdFn === "function") {
+          void setSinkIdFn.call(audioEl, "").catch(() => undefined);
         }
       } catch (err) {
         console.warn("[avatar] setSinkId failed (non-fatal)", err);
       }
+
+      void videoPlayPromise.catch(() => undefined);
+
+      let audioPlaySucceeded = false;
       try {
-        await audioEl.play();
+        await audioPlayPromise;
+        audioPlaySucceeded = true;
         console.info("[avatar] <audio> play() ok", {
           muted: String(audioEl.muted),
           volume: String(audioEl.volume),
           paused: String(audioEl.paused),
           readyState: audioEl.readyState,
           currentTime: audioEl.currentTime,
+          attached: String(attached),
         });
       } catch (err) {
-        console.error("[avatar] <audio> play() failed", err);
+        console.error(
+          "[avatar] <audio> play() failed — autoplay blocked or no gesture",
+          err,
+        );
       }
 
       // Diagnostic: log audio element state every 2s to see if currentTime
@@ -242,11 +274,22 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         }
       }
 
-      setNeedsUnmute(false);
-
-      if (!audioReadyFiredRef.current) {
-        audioReadyFiredRef.current = true;
-        onAudioReady?.();
+      // Only hide the manual click-to-unmute overlay if play() actually
+      // succeeded. Otherwise the user is stuck with no audio and no way
+      // to retry. A failed audioEl.play() leaves the audio element in a
+      // muted state regardless of what we set — only a fresh user gesture
+      // (overlay click) can recover.
+      if (audioPlaySucceeded) {
+        setNeedsUnmute(false);
+        if (!audioReadyFiredRef.current) {
+          audioReadyFiredRef.current = true;
+          onAudioReady?.();
+        }
+      } else {
+        // Reset the auto-attempt guard so the autoUnmute effect can fire
+        // once more if something downstream changes (e.g. track lands
+        // late). The user-facing fallback is the manual overlay.
+        autoUnmuteAttemptedRef.current = false;
       }
     }, [attachAudioToElement, onAudioReady]);
 
@@ -269,7 +312,6 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
     // pipeline — user hears Alex from the very first word. If the browser
     // refuses (no gesture token), needsUnmute stays true and the manual
     // click-to-unmute overlay remains visible as a fallback.
-    const autoUnmuteAttemptedRef = useRef<boolean>(false);
     useEffect(() => {
       if (!autoUnmute) return;
       if (!isVideoReady) return;
@@ -307,7 +349,14 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
           autoPlay
           playsInline
           muted
-          style={{ display: "none" }}
+          style={{
+            position: "absolute",
+            width: 1,
+            height: 1,
+            opacity: 0,
+            pointerEvents: "none",
+            left: -9999,
+          }}
         >
           <track kind="captions" />
         </audio>
