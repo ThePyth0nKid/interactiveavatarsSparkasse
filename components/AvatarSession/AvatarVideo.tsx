@@ -18,6 +18,11 @@ interface AvatarVideoProps {
   fit?: "contain" | "cover";
   objectPosition?: string;
   onAudioReady?: () => void;
+  // When true, audio is unmuted automatically as soon as the stream is ready.
+  // Use this only when the parent has already received a user gesture (i.e.
+  // a "start" button click) — browsers allow audio playback for the lifetime
+  // of the document once a gesture has occurred.
+  autoUnmute?: boolean;
 }
 
 // Audio architecture (after researching LiveKit + webrtchacks):
@@ -32,7 +37,10 @@ interface AvatarVideoProps {
 // On the user's gesture we set audio.muted = false and await audio.play().
 // This is the canonical LiveKit pattern (RemoteAudioTrack.attach()).
 export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
-  ({ fit = "contain", objectPosition = "center", onAudioReady }, ref) => {
+  (
+    { fit = "contain", objectPosition = "center", onAudioReady, autoUnmute = false },
+    ref,
+  ) => {
     const { sessionState } = useStreamingAvatarSession();
     const { connectionQuality } = useConnectionQuality();
     const { isStreamReady } = useStreamingAvatarContext();
@@ -254,6 +262,23 @@ export const AvatarVideo = forwardRef<HTMLVideoElement, AvatarVideoProps>(
         }
       };
     }, []);
+
+    // When the parent has captured the user gesture upstream (i.e. a "start"
+    // button click), automatically unmute as soon as the stream is ready.
+    // The agent's auto-greeting then plays through an already-live audio
+    // pipeline — user hears Alex from the very first word. If the browser
+    // refuses (no gesture token), needsUnmute stays true and the manual
+    // click-to-unmute overlay remains visible as a fallback.
+    const autoUnmuteAttemptedRef = useRef<boolean>(false);
+    useEffect(() => {
+      if (!autoUnmute) return;
+      if (!isVideoReady) return;
+      if (!needsUnmute) return;
+      if (autoUnmuteAttemptedRef.current) return;
+      autoUnmuteAttemptedRef.current = true;
+      console.info("[avatar] autoUnmute: attempting unmute on stream ready");
+      void handleUnmute();
+    }, [autoUnmute, isVideoReady, needsUnmute, handleUnmute]);
 
     return (
       <>

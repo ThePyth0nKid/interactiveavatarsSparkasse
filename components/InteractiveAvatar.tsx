@@ -9,7 +9,6 @@ import { useVoiceChat } from "./logic/useVoiceChat";
 import {
   StreamingAvatarProvider,
   StreamingAvatarSessionState,
-  useStreamingAvatarContext,
 } from "./logic";
 import { useConversationState } from "./logic/useConversationState";
 import { useInterrupt } from "./logic/useInterrupt";
@@ -23,12 +22,10 @@ import { TextOverlay } from "./AvatarSession/TextOverlay";
 
 const PREFERRED_AVATAR_ID = AVATARS[0].avatar_id;
 const PREFERRED_VOICE_ID =
-  process.env.NEXT_PUBLIC_LIVEAVATAR_VOICE_ID ?? null;
+  process.env.NEXT_PUBLIC_LIVEAVATAR_VOICE_ID ||
+  "c4172817-d52b-4237-98b0-140679312b5b";
 const PREFERRED_CONTEXT_ID =
   process.env.NEXT_PUBLIC_LIVEAVATAR_CONTEXT_ID ?? null;
-
-const OPENING_GREETING =
-  "Hallo, ich bin Alex, Ihr digitaler Berater der Sparkasse Pforzheim Calw. Wie kann ich Ihnen heute weiterhelfen?";
 
 const PORTRAIT_OBJECT_POSITION = "30% center";
 
@@ -55,6 +52,71 @@ interface InteractiveAvatarProps {
   fullscreen?: boolean;
   hideChat?: boolean;
   forcePortrait?: boolean;
+}
+
+interface StartupOverlayProps {
+  isStarting: boolean;
+  micPermissionDenied: boolean;
+  onStart: () => void;
+  onTextStart: () => void;
+}
+
+function StartupOverlay({
+  isStarting,
+  micPermissionDenied,
+  onStart,
+  onTextStart,
+}: StartupOverlayProps) {
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black">
+      <div className="flex flex-col items-center gap-4 px-6 text-center">
+        <h2 className="text-white text-xl font-medium">
+          Sprechen Sie mit Alex
+        </h2>
+        <p className="text-white/70 text-sm max-w-xs">
+          Ihrem digitalen Berater der Sparkasse Pforzheim Calw. Beim Start
+          wird der Mikrofon-Zugriff abgefragt — bitte erlauben.
+        </p>
+        <button
+          onClick={onStart}
+          disabled={isStarting}
+          className="h-12 rounded-full bg-[#E60000] text-white font-medium px-6 text-base shadow-lg border border-black/10 hover:brightness-110 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center gap-2"
+          aria-label="Beratung starten"
+        >
+          <svg
+            width="20"
+            height="20"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+          {isStarting ? "Verbindung wird hergestellt…" : "Beratung starten"}
+        </button>
+        <button
+          onClick={onTextStart}
+          disabled={isStarting}
+          className="h-9 rounded-full bg-white/10 text-white text-sm px-4 hover:bg-white/20 disabled:opacity-50 transition"
+        >
+          Lieber per Text chatten
+        </button>
+        {micPermissionDenied && (
+          <p className="text-red-400 text-xs max-w-xs">
+            Mikrofon-Zugriff wurde abgelehnt. Bitte im Browser erlauben oder
+            stattdessen den Text-Chat nutzen.
+          </p>
+        )}
+      </div>
+    </div>
+  );
 }
 
 async function fetchSessionToken(
@@ -110,12 +172,17 @@ function InteractiveAvatar({
   const { startListening, stopListening, isAvatarTalking } =
     useConversationState();
   const { interrupt } = useInterrupt();
-  const { sessionRef } = useStreamingAvatarContext();
 
   const [showTextOverlay, setShowTextOverlay] = useState<boolean>(false);
+  const [micPermissionDenied, setMicPermissionDenied] =
+    useState<boolean>(false);
+  const [isStarting, setIsStarting] = useState<boolean>(false);
   const mediaStream = useRef<HTMLVideoElement>(null);
-  const startedOnMountRef = useRef<boolean>(false);
-  const greetedRef = useRef<boolean>(false);
+  // When the user picks the text-only entry path, we want the TextOverlay to
+  // appear automatically the moment the session is connected — not after a
+  // second click. Tracked as a ref so the value survives any re-renders that
+  // happen during the async startSession() call.
+  const pendingTextModeRef = useRef<boolean>(false);
   const isMobile = useMediaQuery("(max-width: 639px)");
 
   const startSession = useMemoizedFn(async (withVoiceChat: boolean) => {
@@ -136,44 +203,65 @@ function InteractiveAvatar({
     }
   });
 
+  // Single entry point: ensures we have the user gesture + microphone
+  // permission BEFORE we start the LiveAvatar session. This way the agent's
+  // auto-greeting plays through an already-unmuted audio pipeline — the user
+  // hears Alex from the very first word, in Adrian's voice, no duplicates.
+  const handleStart = useMemoizedFn(async (withVoiceChat: boolean) => {
+    if (isStarting) return;
+    setIsStarting(true);
+    setMicPermissionDenied(false);
+    pendingTextModeRef.current = !withVoiceChat;
+    try {
+      if (withVoiceChat) {
+        try {
+          const probe = await navigator.mediaDevices.getUserMedia({
+            audio: true,
+          });
+          probe.getTracks().forEach((t) => t.stop());
+        } catch (err) {
+          console.warn("[avatar] mic permission denied or unavailable", err);
+          setMicPermissionDenied(true);
+          setIsStarting(false);
+          return;
+        }
+      }
+      await startSession(withVoiceChat);
+    } finally {
+      setIsStarting(false);
+    }
+  });
+
+  // When the user entered via the text path, surface the TextOverlay as soon
+  // as the session is fully connected. The agent's voice greeting still
+  // plays through the unmuted audio pipeline, but the user gets the input
+  // field immediately so they can type their first question.
+  useEffect(() => {
+    if (
+      sessionState === StreamingAvatarSessionState.CONNECTED &&
+      pendingTextModeRef.current
+    ) {
+      pendingTextModeRef.current = false;
+      setShowTextOverlay(true);
+    }
+    if (sessionState === StreamingAvatarSessionState.INACTIVE) {
+      pendingTextModeRef.current = false;
+    }
+  }, [sessionState]);
+
   useUnmount(() => {
     void stopAvatar();
   });
 
-  // Auto-start the session in voice mode on mount.
-  useEffect(() => {
-    if (
-      !startedOnMountRef.current &&
-      sessionState === StreamingAvatarSessionState.INACTIVE
-    ) {
-      startedOnMountRef.current = true;
-      void startSession(true);
-    }
-    if (sessionState === StreamingAvatarSessionState.INACTIVE) {
-      greetedRef.current = false;
-    }
-  }, [sessionState, startSession]);
-
   // When the LiveKit stream is ready, attach SDK tracks to our video element.
-  // The opening greeting is deferred to handleAudioReady (fires after the
-  // user's unmute click) so the user actually hears it. Triggering it here
-  // would speak into a muted pipeline.
+  // Audio is unmuted automatically (autoUnmute on AvatarVideo) because the
+  // user's gesture happened on the start button — we already have permission
+  // to play audio for this document.
   useEffect(() => {
     if (!isStreamReady || !mediaStream.current) return;
     const video = mediaStream.current;
     attachMedia(video);
   }, [isStreamReady, attachMedia]);
-
-  const handleAudioReady = useMemoizedFn(() => {
-    if (greetedRef.current || !sessionRef.current) return;
-    greetedRef.current = true;
-    try {
-      sessionRef.current.repeat(OPENING_GREETING);
-      console.info("[avatar] opening greeting triggered post-unmute");
-    } catch (err) {
-      console.warn("[avatar] opening greeting failed", err);
-    }
-  });
 
   // Switch listening on/off based on who is speaking. While the avatar talks,
   // we mute the user's mic so it doesn't bleed back into the STT and trigger
@@ -242,9 +330,9 @@ function InteractiveAvatar({
                     <div className="absolute inset-0">
                       <AvatarVideo
                         ref={mediaStream}
+                        autoUnmute
                         fit="cover"
                         objectPosition={PORTRAIT_OBJECT_POSITION}
-                        onAudioReady={handleAudioReady}
                       />
                     </div>
                   </div>
@@ -253,9 +341,9 @@ function InteractiveAvatar({
                     <div className="absolute inset-0">
                       <AvatarVideo
                         ref={mediaStream}
+                        autoUnmute
                         fit="contain"
                         objectPosition="center center"
-                        onAudioReady={handleAudioReady}
                       />
                     </div>
                   </div>
@@ -266,15 +354,24 @@ function InteractiveAvatar({
                 <div className="absolute inset-0">
                   <AvatarVideo
                     ref={mediaStream}
+                    autoUnmute
                     fit="cover"
                     objectPosition={PORTRAIT_OBJECT_POSITION}
-                    onAudioReady={handleAudioReady}
                   />
                 </div>
               </div>
             ) : (
-              <AvatarVideo ref={mediaStream} onAudioReady={handleAudioReady} />
+              <AvatarVideo ref={mediaStream} autoUnmute />
             ))}
+          {sessionState === StreamingAvatarSessionState.INACTIVE &&
+            (fullscreen || forcePortrait) && (
+              <StartupOverlay
+                isStarting={isStarting}
+                micPermissionDenied={micPermissionDenied}
+                onStart={() => void handleStart(true)}
+                onTextStart={() => void handleStart(false)}
+              />
+            )}
           <div className="absolute bottom-5 inset-x-0 flex items-center justify-center gap-3 px-3">
             <div className="flex-1" />
 
@@ -294,15 +391,18 @@ function InteractiveAvatar({
             </div>
 
             <div className="flex-1 flex justify-end">
-              <button
-                disabled={isVoiceChatLoading}
-                onClick={() => void handleToggleTextMode()}
-                className="h-10 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 px-4 text-sm font-medium hover:bg-white"
-                aria-pressed={showTextOverlay}
-                aria-label="Text-Chat umschalten"
-              >
-                {showTextOverlay ? "Voice" : "Text"}
-              </button>
+              {!showTextOverlay &&
+                sessionState === StreamingAvatarSessionState.CONNECTED && (
+                  <button
+                    disabled={isVoiceChatLoading}
+                    onClick={() => void handleToggleTextMode()}
+                    className="h-10 rounded-full bg-white/95 text-zinc-900 shadow-lg border border-black/10 px-4 text-sm font-medium hover:bg-white"
+                    aria-pressed={showTextOverlay}
+                    aria-label="Text-Chat einblenden"
+                  >
+                    Text
+                  </button>
+                )}
             </div>
           </div>
 
@@ -332,13 +432,27 @@ function InteractiveAvatar({
           {sessionState === StreamingAvatarSessionState.CONNECTED ? (
             <AvatarControls />
           ) : sessionState === StreamingAvatarSessionState.INACTIVE ? (
-            <div className="flex flex-row gap-4">
-              <Button onClick={() => startSession(true)}>
-                Start Voice Chat
-              </Button>
-              <Button onClick={() => startSession(false)}>
-                Start Text Chat
-              </Button>
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex flex-row gap-4">
+                <Button
+                  disabled={isStarting}
+                  onClick={() => void handleStart(true)}
+                >
+                  {isStarting ? "Starte…" : "Start Voice Chat"}
+                </Button>
+                <Button
+                  disabled={isStarting}
+                  onClick={() => void handleStart(false)}
+                >
+                  Start Text Chat
+                </Button>
+              </div>
+              {micPermissionDenied && (
+                <p className="text-xs text-red-400">
+                  Mikrofon-Zugriff wurde abgelehnt. Bitte im Browser erlauben
+                  oder Text-Chat starten.
+                </p>
+              )}
             </div>
           ) : (
             <LoadingIcon />

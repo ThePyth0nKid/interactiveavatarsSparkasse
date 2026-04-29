@@ -61,6 +61,15 @@ export async function POST(request: NextRequest) {
           voice_id: body.voice_id ?? null,
           context_id: body.context_id ?? null,
           language: body.language ?? "de",
+          voice_settings: {
+            provider: "elevenLabs",
+            model: "eleven_flash_v2_5",
+            speed: 1.0,
+            stability: 0.55,
+            similarity_boost: 0.85,
+            style: 0.15,
+            use_speaker_boost: true,
+          },
         },
       }),
     });

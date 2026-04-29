@@ -4,7 +4,7 @@ import {
   LiveAvatarSession,
   SessionEvent,
 } from "@heygen/liveavatar-web-sdk";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 
 import {
   StreamingAvatarSessionState,
@@ -13,6 +13,7 @@ import {
 } from "./context";
 import { useVoiceChat } from "./useVoiceChat";
 import { useMessageHistory } from "./useMessageHistory";
+import { startPipelineDiagnostics } from "./pipelineDiagnostics";
 
 type InitOptions = {
   voiceChat?: boolean;
@@ -36,6 +37,7 @@ export const useStreamingAvatarSession = () => {
     clearMessages,
   } = useStreamingAvatarContext();
   const { stopVoiceChat } = useVoiceChat();
+  const diagnosticsRef = useRef<{ stop: () => void } | null>(null);
 
   useMessageHistory();
 
@@ -45,6 +47,12 @@ export const useStreamingAvatarSession = () => {
         apiUrl,
         voiceChat: options.voiceChat ?? false,
       });
+      try {
+        diagnosticsRef.current?.stop();
+        diagnosticsRef.current = startPipelineDiagnostics(sessionRef.current);
+      } catch (err) {
+        console.warn("[avatar] pipeline diagnostics failed to start", err);
+      }
       return sessionRef.current;
     },
     [apiUrl, sessionRef],
@@ -58,6 +66,14 @@ export const useStreamingAvatarSession = () => {
     setIsUserTalking(false);
     setIsAvatarTalking(false);
     setIsStreamReady(false);
+    if (diagnosticsRef.current) {
+      try {
+        diagnosticsRef.current.stop();
+      } catch {
+        /* ignore */
+      }
+      diagnosticsRef.current = null;
+    }
     if (session) {
       try {
         await session.stop();
