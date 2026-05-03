@@ -265,7 +265,19 @@ function InteractiveAvatar({
         message?: string;
         errorCode?: number;
         status?: number;
+        name?: string;
       };
+      // Dump the raw SDK error so the operator can read the upstream
+      // payload from the browser console even if the UI banner falls
+      // back to a generic message. This is the only place the original
+      // SessionApiError is reachable.
+      console.error("[avatar][session_start] raw SDK error", {
+        name: sdkErr?.name,
+        message: sdkErr?.message,
+        errorCode: sdkErr?.errorCode,
+        status: sdkErr?.status,
+        full: err,
+      });
       throw new AvatarStartError({
         cause: "session_start",
         status: sdkErr?.status ?? null,
@@ -358,17 +370,23 @@ function InteractiveAvatar({
   // Surface server-side disconnects (e.g. session expired, kicked, network)
   // as a friendly error on the start screen so the user knows why the
   // session ended instead of just landing back on a blank entry point.
+  // Important: SESSION_DISCONNECTED fires DURING session.start() failure,
+  // BEFORE the catch in handleStart can attach the actual upstream
+  // SessionApiError. Use a functional update so we never overwrite a more
+  // specific error that handleStart already set.
   useEffect(() => {
     if (
       sessionState === StreamingAvatarSessionState.INACTIVE &&
       lastDisconnectReason &&
       lastDisconnectReason !== "CLIENT_INITIATED"
     ) {
-      setStartError(
-        mapAvatarError({
-          cause: "session_disconnect",
-          reason: lastDisconnectReason,
-        }),
+      setStartError((prev) =>
+        prev
+          ? prev
+          : mapAvatarError({
+              cause: "session_disconnect",
+              reason: lastDisconnectReason,
+            }),
       );
     }
   }, [sessionState, lastDisconnectReason]);
