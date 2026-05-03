@@ -16,6 +16,17 @@ interface TokenRequestBody {
   context_id?: string | null;
 }
 
+interface ErrorPayload {
+  error: string;
+  code?: number | string | null;
+  status?: number | null;
+  upstreamMessage?: string | null;
+}
+
+function errorResponse(payload: ErrorPayload, httpStatus: number) {
+  return NextResponse.json(payload, { status: httpStatus });
+}
+
 export async function POST(request: NextRequest) {
   const apiKey = process.env.LIVEAVATAR_API_KEY;
   const apiUrl = process.env.LIVEAVATAR_API_URL ?? "https://api.liveavatar.com";
@@ -23,9 +34,13 @@ export async function POST(request: NextRequest) {
 
   if (!apiKey) {
     console.error("LIVEAVATAR_API_KEY is missing from .env");
-    return NextResponse.json(
-      { error: "Server is not configured: LIVEAVATAR_API_KEY missing" },
-      { status: 500 },
+    return errorResponse(
+      {
+        error: "Server is not configured: LIVEAVATAR_API_KEY missing",
+        code: "config_missing",
+        status: 500,
+      },
+      500,
     );
   }
 
@@ -40,9 +55,13 @@ export async function POST(request: NextRequest) {
 
   const avatar_id = body.avatar_id ?? defaultAvatarId;
   if (!avatar_id) {
-    return NextResponse.json(
-      { error: "avatar_id must be provided via body or env" },
-      { status: 400 },
+    return errorResponse(
+      {
+        error: "avatar_id must be provided via body or env",
+        code: "avatar_id_missing",
+        status: 400,
+      },
+      400,
     );
   }
 
@@ -74,17 +93,29 @@ export async function POST(request: NextRequest) {
       }),
     });
 
-    const data = (await res.json()) as SessionTokenResponse;
+    let data: SessionTokenResponse | null = null;
+    try {
+      data = (await res.json()) as SessionTokenResponse;
+    } catch {
+      data = null;
+    }
 
-    if (!res.ok || data.code !== 1000 || !data.data?.session_token) {
-      console.error("LiveAvatar token request failed:", res.status, data);
-      return NextResponse.json(
+    if (!res.ok || !data || data.code !== 1000 || !data.data?.session_token) {
+      console.error("LiveAvatar token request failed:", {
+        httpStatus: res.status,
+        upstreamCode: data?.code,
+        upstreamMessage: data?.message,
+      });
+      return errorResponse(
         {
           error:
-            data.message ??
+            data?.message ??
             `LiveAvatar token request failed with status ${res.status}`,
+          code: data?.code ?? null,
+          status: res.status,
+          upstreamMessage: data?.message ?? null,
         },
-        { status: 502 },
+        502,
       );
     }
 
@@ -97,9 +128,16 @@ export async function POST(request: NextRequest) {
     );
   } catch (error) {
     console.error("Error retrieving LiveAvatar session token:", error);
-    return NextResponse.json(
-      { error: "Failed to retrieve LiveAvatar session token" },
-      { status: 500 },
+    return errorResponse(
+      {
+        error:
+          error instanceof Error
+            ? error.message
+            : "Failed to retrieve LiveAvatar session token",
+        code: "network_error",
+        status: 0,
+      },
+      500,
     );
   }
 }

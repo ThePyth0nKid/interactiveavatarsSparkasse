@@ -71,6 +71,9 @@ export type StreamingAvatarContextProps = {
 
   connectionQuality: ConnectionQuality;
   setConnectionQuality: (connectionQuality: ConnectionQuality) => void;
+
+  lastDisconnectReason: string | null;
+  setLastDisconnectReason: (reason: string | null) => void;
 };
 
 const StreamingAvatarContext = React.createContext<StreamingAvatarContextProps>(
@@ -103,6 +106,8 @@ const StreamingAvatarContext = React.createContext<StreamingAvatarContextProps>(
     setIsAvatarTalking: () => {},
     connectionQuality: ConnectionQuality.UNKNOWN,
     setConnectionQuality: () => {},
+    lastDisconnectReason: null,
+    setLastDisconnectReason: () => {},
   },
 );
 
@@ -224,6 +229,13 @@ const useStreamingAvatarConnectionQualityState = () => {
   return { connectionQuality, setConnectionQuality };
 };
 
+const useStreamingAvatarDisconnectState = () => {
+  const [lastDisconnectReason, setLastDisconnectReason] = useState<
+    string | null
+  >(null);
+  return { lastDisconnectReason, setLastDisconnectReason };
+};
+
 const useStreamingAvatarReadinessState = () => {
   const [isFullyReady, setIsFullyReady] = useState(false);
   const [isMicrophoneReady, setIsMicrophoneReady] = useState(false);
@@ -251,6 +263,7 @@ export const StreamingAvatarProvider = ({
   const talkingState = useStreamingAvatarTalkingState();
   const connectionQualityState = useStreamingAvatarConnectionQualityState();
   const readinessState = useStreamingAvatarReadinessState();
+  const disconnectState = useStreamingAvatarDisconnectState();
 
   return (
     <StreamingAvatarContext.Provider
@@ -264,6 +277,7 @@ export const StreamingAvatarProvider = ({
         ...talkingState,
         ...connectionQualityState,
         ...readinessState,
+        ...disconnectState,
       }}
     >
       {children}

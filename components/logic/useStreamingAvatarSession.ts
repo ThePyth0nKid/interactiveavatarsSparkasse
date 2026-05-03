@@ -35,6 +35,7 @@ export const useStreamingAvatarSession = () => {
     handleAvatarTranscriptionChunk,
     handleEndMessage,
     clearMessages,
+    setLastDisconnectReason,
   } = useStreamingAvatarContext();
   const { stopVoiceChat } = useVoiceChat();
   const diagnosticsRef = useRef<{ stop: () => void } | null>(null);
@@ -130,6 +131,13 @@ export const useStreamingAvatarSession = () => {
 
       session.on(SessionEvent.SESSION_DISCONNECTED, (reason?: unknown) => {
         console.warn("[avatar] SESSION_DISCONNECTED", { reason });
+        if (typeof reason === "string") {
+          setLastDisconnectReason(reason);
+        } else if (reason) {
+          setLastDisconnectReason(String(reason));
+        } else {
+          setLastDisconnectReason("UNKNOWN_REASON");
+        }
         void stop();
       });
 
@@ -188,6 +196,7 @@ export const useStreamingAvatarSession = () => {
       handleUserTranscriptionChunk,
       handleAvatarTranscriptionChunk,
       handleEndMessage,
+      setLastDisconnectReason,
     ],
   );
 

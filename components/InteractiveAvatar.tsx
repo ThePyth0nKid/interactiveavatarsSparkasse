@@ -10,12 +10,18 @@ import {
   StreamingAvatarProvider,
   StreamingAvatarSessionState,
 } from "./logic";
+import { useStreamingAvatarContext } from "./logic/context";
 import { useConversationState } from "./logic/useConversationState";
 import { useInterrupt } from "./logic/useInterrupt";
 import { LoadingIcon } from "./Icons";
 import { MessageHistory } from "./AvatarSession/MessageHistory";
 
 import { AVATARS } from "@/app/lib/constants";
+import {
+  AvatarStartError,
+  FriendlyError,
+  mapAvatarError,
+} from "@/app/lib/errorMessages";
 import { useMediaQuery } from "./logic/useMediaQuery";
 import { MicOverlay } from "./AvatarSession/MicOverlay";
 import { TextOverlay } from "./AvatarSession/TextOverlay";
@@ -57,16 +63,43 @@ interface InteractiveAvatarProps {
 interface StartupOverlayProps {
   isStarting: boolean;
   micPermissionDenied: boolean;
+  startError: FriendlyError | null;
   onStart: () => void;
   onTextStart: () => void;
+}
+
+function ErrorBanner({ error }: { error: FriendlyError }) {
+  return (
+    <div
+      role="alert"
+      className="w-full max-w-sm rounded-xl border border-red-400/30 bg-red-950/50 px-4 py-3 text-left"
+    >
+      <p className="text-red-200 text-sm font-medium">{error.title}</p>
+      <p className="text-white/85 text-sm mt-1 leading-snug">{error.message}</p>
+      {error.hint && (
+        <p className="text-white/55 text-xs mt-2 leading-snug">{error.hint}</p>
+      )}
+      {error.technical && (
+        <p className="text-white/35 text-[10px] mt-2 font-mono break-all">
+          {error.technical}
+        </p>
+      )}
+    </div>
+  );
 }
 
 function StartupOverlay({
   isStarting,
   micPermissionDenied,
+  startError,
   onStart,
   onTextStart,
 }: StartupOverlayProps) {
+  const startLabel = startError?.retryable === false
+    ? "Beratung starten"
+    : startError
+      ? "Erneut versuchen"
+      : "Beratung starten";
   return (
     <div className="absolute inset-0 z-20 flex items-center justify-center bg-black">
       <div className="flex flex-col items-center gap-4 px-6 text-center">
@@ -77,6 +110,7 @@ function StartupOverlay({
           Ihrem digitalen Berater der Sparkasse Pforzheim Calw. Beim Start
           wird der Mikrofon-Zugriff abgefragt — bitte erlauben.
         </p>
+        {startError && <ErrorBanner error={startError} />}
         <button
           onClick={onStart}
           disabled={isStarting}
@@ -99,7 +133,7 @@ function StartupOverlay({
             <line x1="12" y1="19" x2="12" y2="23" />
             <line x1="8" y1="23" x2="16" y2="23" />
           </svg>
-          {isStarting ? "Verbindung wird hergestellt…" : "Beratung starten"}
+          {isStarting ? "Verbindung wird hergestellt…" : startLabel}
         </button>
         <button
           onClick={onTextStart}
@@ -119,30 +153,59 @@ function StartupOverlay({
   );
 }
 
+interface ApiErrorBody {
+  error?: string;
+  code?: number | string | null;
+  status?: number | null;
+  upstreamMessage?: string | null;
+}
+
 async function fetchSessionToken(
   sessionConfig: SessionConfig,
 ): Promise<string> {
-  const response = await fetch("/api/get-access-token", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      avatar_id: sessionConfig.avatar_id,
-      language: sessionConfig.language,
-      voice_id: sessionConfig.voice_id,
-      context_id: sessionConfig.context_id,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch("/api/get-access-token", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        avatar_id: sessionConfig.avatar_id,
+        language: sessionConfig.language,
+        voice_id: sessionConfig.voice_id,
+        context_id: sessionConfig.context_id,
+      }),
+    });
+  } catch (err) {
+    throw new AvatarStartError({
+      cause: "fetch_token",
+      status: 0,
+      code: "network_error",
+      message: err instanceof Error ? err.message : "Network error",
+    });
+  }
 
   if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(
-      `Failed to obtain session token (${response.status}): ${errorText}`,
-    );
+    let body: ApiErrorBody | null = null;
+    try {
+      body = (await response.json()) as ApiErrorBody;
+    } catch {
+      body = null;
+    }
+    throw new AvatarStartError({
+      cause: "fetch_token",
+      status: body?.status ?? response.status,
+      code: body?.code ?? null,
+      upstreamMessage: body?.upstreamMessage ?? body?.error ?? null,
+      message: body?.error ?? `HTTP ${response.status}`,
+    });
   }
 
   const data = (await response.json()) as TokenResponse;
   if (!data.session_token) {
-    throw new Error("Session token missing in response");
+    throw new AvatarStartError({
+      cause: "fetch_token",
+      message: "Session token missing in response",
+    });
   }
 
   return data.session_token;
@@ -172,11 +235,14 @@ function InteractiveAvatar({
   const { startListening, stopListening, isAvatarTalking } =
     useConversationState();
   const { interrupt } = useInterrupt();
+  const { lastDisconnectReason, setLastDisconnectReason } =
+    useStreamingAvatarContext();
 
   const [showTextOverlay, setShowTextOverlay] = useState<boolean>(false);
   const [micPermissionDenied, setMicPermissionDenied] =
     useState<boolean>(false);
   const [isStarting, setIsStarting] = useState<boolean>(false);
+  const [startError, setStartError] = useState<FriendlyError | null>(null);
   const mediaStream = useRef<HTMLVideoElement>(null);
   // When the user picks the text-only entry path, we want the TextOverlay to
   // appear automatically the moment the session is connected — not after a
@@ -186,20 +252,38 @@ function InteractiveAvatar({
   const isMobile = useMediaQuery("(max-width: 639px)");
 
   const startSession = useMemoizedFn(async (withVoiceChat: boolean) => {
+    const sessionToken = await fetchSessionToken(DEFAULT_CONFIG);
+    // Voice chat is started explicitly after the session is connected so
+    // we control the order: stream-ready event fires before mic capture
+    // begins. This avoids races where the SDK publishes a mic track to a
+    // room that isn't fully wired up.
+    initAvatar(sessionToken, { voiceChat: false });
     try {
-      const sessionToken = await fetchSessionToken(DEFAULT_CONFIG);
-      // Voice chat is started explicitly after the session is connected so
-      // we control the order: stream-ready event fires before mic capture
-      // begins. This avoids races where the SDK publishes a mic track to a
-      // room that isn't fully wired up.
-      initAvatar(sessionToken, { voiceChat: false });
       await startAvatar(sessionToken, { voiceChat: false });
+    } catch (err) {
+      const sdkErr = err as {
+        message?: string;
+        errorCode?: number;
+        status?: number;
+      };
+      throw new AvatarStartError({
+        cause: "session_start",
+        status: sdkErr?.status ?? null,
+        code: sdkErr?.errorCode ?? null,
+        upstreamMessage: sdkErr?.message ?? null,
+        message: sdkErr?.message,
+      });
+    }
 
-      if (withVoiceChat) {
+    if (withVoiceChat) {
+      try {
         await startVoiceChat();
+      } catch (err) {
+        throw new AvatarStartError({
+          cause: "voice_chat",
+          message: err instanceof Error ? err.message : "Voice chat failed",
+        });
       }
-    } catch (error) {
-      console.error("Error starting avatar session:", error);
     }
   });
 
@@ -211,6 +295,8 @@ function InteractiveAvatar({
     if (isStarting) return;
     setIsStarting(true);
     setMicPermissionDenied(false);
+    setStartError(null);
+    setLastDisconnectReason(null);
     pendingTextModeRef.current = !withVoiceChat;
     try {
       if (withVoiceChat) {
@@ -227,6 +313,26 @@ function InteractiveAvatar({
         }
       }
       await startSession(withVoiceChat);
+    } catch (err) {
+      console.error("[avatar] start failed", err);
+      if (err instanceof AvatarStartError) {
+        setStartError(
+          mapAvatarError({
+            cause: err.cause,
+            status: err.status,
+            code: err.code,
+            message: err.upstreamMessage ?? err.message,
+          }),
+        );
+      } else {
+        setStartError(
+          mapAvatarError({
+            cause: "unknown",
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        );
+      }
+      pendingTextModeRef.current = false;
     } finally {
       setIsStarting(false);
     }
@@ -248,6 +354,24 @@ function InteractiveAvatar({
       pendingTextModeRef.current = false;
     }
   }, [sessionState]);
+
+  // Surface server-side disconnects (e.g. session expired, kicked, network)
+  // as a friendly error on the start screen so the user knows why the
+  // session ended instead of just landing back on a blank entry point.
+  useEffect(() => {
+    if (
+      sessionState === StreamingAvatarSessionState.INACTIVE &&
+      lastDisconnectReason &&
+      lastDisconnectReason !== "CLIENT_INITIATED"
+    ) {
+      setStartError(
+        mapAvatarError({
+          cause: "session_disconnect",
+          reason: lastDisconnectReason,
+        }),
+      );
+    }
+  }, [sessionState, lastDisconnectReason]);
 
   useUnmount(() => {
     void stopAvatar();
@@ -368,6 +492,7 @@ function InteractiveAvatar({
               <StartupOverlay
                 isStarting={isStarting}
                 micPermissionDenied={micPermissionDenied}
+                startError={startError}
                 onStart={() => void handleStart(true)}
                 onTextStart={() => void handleStart(false)}
               />
@@ -453,6 +578,7 @@ function InteractiveAvatar({
                   oder Text-Chat starten.
                 </p>
               )}
+              {startError && <ErrorBanner error={startError} />}
             </div>
           ) : (
             <LoadingIcon />
